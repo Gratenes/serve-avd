@@ -1,16 +1,16 @@
 {
-  "name": "serve-emu",
+  "name": "serve-avd",
   "version": "0.1.0",
   "description": "The `npx serve` of Android Emulators — stream any emulator to the browser with full interaction, no instrumentation.",
   "type": "module",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/hsandhu/serve-emu.git"
+    "url": "git+https://github.com/hsandhu/serve-avd.git"
   },
-  "homepage": "https://github.com/hsandhu/serve-emu#readme",
+  "homepage": "https://github.com/hsandhu/serve-avd#readme",
   "bugs": {
-    "url": "https://github.com/hsandhu/serve-emu/issues"
+    "url": "https://github.com/hsandhu/serve-avd/issues"
   },
   "keywords": [
     "android",
@@ -25,13 +25,13 @@
     "mcp"
   ],
   "bin": {
-    "serve-emu": "dist/serve-emu.js"
+    "serve-avd": "dist/serve-avd.js"
   },
   "engines": {
     "node": ">=18.17"
   },
   "files": [
-    "dist/serve-emu.js",
+    "dist/serve-avd.js",
     "dist/middleware.js",
     "dist/middleware.cjs",
     "dist/client.js",

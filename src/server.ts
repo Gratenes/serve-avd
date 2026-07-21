@@ -6,12 +6,12 @@ import { createServer, type Server } from "http";
 import { emuMiddleware, type EmuMiddlewareOptions, type EmuMiddleware } from "./middleware";
 import { closeAllDeviceSessions, peekDeviceSession } from "./device-session";
 import {
-  inProcessServeEmuState,
-  writeServeEmuState,
+  inProcessServeAvdState,
+  writeServeAvdState,
   removeStateForDevice,
   readAllStates,
   statePidAlive,
-  type ServeEmuDeviceState,
+  type ServeAvdDeviceState,
 } from "./state";
 import { isPortFree, findFreePort } from "./ports";
 import { createDebug } from "./debug";
@@ -20,7 +20,7 @@ const debug = createDebug("server");
 
 export interface StartServerOptions extends Omit<EmuMiddlewareOptions, "onShutdown"> {
   port: number;
-  /** Fail (or reclaim a stale serve-emu) instead of scanning when the port is busy. */
+  /** Fail (or reclaim a stale serve-avd) instead of scanning when the port is busy. */
   strictPort?: boolean;
   host?: string;
 }
@@ -31,7 +31,7 @@ export interface RunningServer {
   port: number;
   host: string;
   /** Attach a device and persist its state file. */
-  attach(serial: string): Promise<ServeEmuDeviceState>;
+  attach(serial: string): Promise<ServeAvdDeviceState>;
   /** Stop everything and clean up state files. */
   close(): void;
 }
@@ -41,7 +41,7 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
   let port = options.port;
 
   if (!(await isPortFree(port, host))) {
-    // Reclaim the port when a previous serve-emu (per its state files) holds it.
+    // Reclaim the port when a previous serve-avd (per its state files) holds it.
     const stale = readAllStates().filter((s) => s.port === port && s.pid !== process.pid);
     const reclaimed = stale.some((s) => {
       if (!statePidAlive(s)) return false;
@@ -53,7 +53,7 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
       }
     });
     if (reclaimed) {
-      console.log(`\x1b[90mPort ${port} was held by a previous serve-emu — restarting it.\x1b[0m`);
+      console.log(`\x1b[90mPort ${port} was held by a previous serve-avd — restarting it.\x1b[0m`);
       const deadline = Date.now() + 3_000;
       while (Date.now() < deadline && !(await isPortFree(port, host))) {
         await new Promise((r) => setTimeout(r, 100));
@@ -93,12 +93,12 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
     middleware,
     port,
     host,
-    async attach(serial: string): Promise<ServeEmuDeviceState> {
+    async attach(serial: string): Promise<ServeAvdDeviceState> {
       await middleware.attachDevice(serial);
       attachedHere.add(serial);
       const name = peekDeviceSession(serial)?.name;
-      const state = inProcessServeEmuState(serial, port, options.basePath ?? "/", host, name);
-      writeServeEmuState(state);
+      const state = inProcessServeAvdState(serial, port, options.basePath ?? "/", host, name);
+      writeServeAvdState(state);
       return state;
     },
     close(): void {

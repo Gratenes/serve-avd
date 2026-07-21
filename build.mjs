@@ -8,7 +8,7 @@ import { copyFileSync, chmodSync, mkdirSync, readFileSync } from "fs";
 mkdirSync("dist", { recursive: true });
 
 const pkg = JSON.parse(readFileSync("package.json", "utf8"));
-const define = { __SERVE_EMU_VERSION__: JSON.stringify(pkg.version) };
+const define = { __SERVE_AVD_VERSION__: JSON.stringify(pkg.version) };
 
 const nodeCommon = {
   platform: "node",
@@ -25,11 +25,11 @@ const nodeCommon = {
 await esbuild.build({
   ...nodeCommon,
   entryPoints: ["src/index.ts"],
-  outfile: "dist/serve-emu.js",
+  outfile: "dist/serve-avd.js",
   format: "esm",
   banner: { js: "#!/usr/bin/env node" },
 });
-chmodSync("dist/serve-emu.js", 0o755);
+chmodSync("dist/serve-avd.js", 0o755);
 
 // Middleware — ESM.
 await esbuild.build({

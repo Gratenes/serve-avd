@@ -1,5 +1,5 @@
 /**
- * Connect-style middleware serving the serve-emu preview UI and per-device
+ * Connect-style middleware serving the serve-avd preview UI and per-device
  * helper endpoints, mirroring serve-sim's route map:
  *
  *   {base}/                        preview HTML (inlined JS/CSS)
@@ -41,8 +41,8 @@ import { createDebug } from "./debug";
 
 const debug = createDebug("middleware");
 
-declare const __SERVE_EMU_VERSION__: string | undefined;
-const VERSION = typeof __SERVE_EMU_VERSION__ === "string" ? __SERVE_EMU_VERSION__ : "dev";
+declare const __SERVE_AVD_VERSION__: string | undefined;
+const VERSION = typeof __SERVE_AVD_VERSION__ === "string" ? __SERVE_AVD_VERSION__ : "dev";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -67,7 +67,7 @@ export interface EmuMiddlewareOptions {
   /** Per-session capture options (bit rate, size). */
   sessionOptions?: SessionOptions;
   /**
-   * Accepted for serve-sim API compatibility. serve-emu sessions are always
+   * Accepted for serve-sim API compatibility. serve-avd sessions are always
    * in-process and same-origin, so helper traffic is always "proxied";
    * `handleUpgrade` must be wired either way.
    */
@@ -103,7 +103,7 @@ function previewHtml(base: string, codec: string, initialState: PreviewInitialSt
     css = readFileSync(join(dir, "client.css"), "utf8");
   } catch (err) {
     debug("client assets missing", err);
-    return `<!doctype html><meta charset="utf-8"><title>serve-emu</title><body style="font-family:system-ui;background:#0c0d10;color:#e8e8ea;display:grid;place-items:center;height:100vh;margin:0"><div><h1>serve-emu</h1><p>Client assets not built. Run <code>npm run build</code>.</p></div>`;
+    return `<!doctype html><meta charset="utf-8"><title>serve-avd</title><body style="font-family:system-ui;background:#0c0d10;color:#e8e8ea;display:grid;place-items:center;height:100vh;margin:0"><div><h1>serve-avd</h1><p>Client assets not built. Run <code>npm run build</code>.</p></div>`;
   }
   const boot = JSON.stringify({ basePath: base, codec, initialState: initialState ?? {}, version: VERSION });
   const html = `<!doctype html>
@@ -111,13 +111,13 @@ function previewHtml(base: string, codec: string, initialState: PreviewInitialSt
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>serve-emu</title>
+<title>serve-avd</title>
 <link rel="icon" href="data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y=".9em" font-size="90">🤖</text></svg>')}">
 <style>${css}</style>
 </head>
 <body>
 <div id="app"></div>
-<script>window.__SERVE_EMU__ = ${boot};</script>
+<script>window.__SERVE_AVD__ = ${boot};</script>
 <script>${js}</script>
 </body>
 </html>`;

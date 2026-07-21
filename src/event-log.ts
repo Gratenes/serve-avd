@@ -1,7 +1,7 @@
 /**
  * Recent-actions event log. In-memory ring buffer with subscriber fan-out —
  * served as JSON at `/api/event-log`, streamed as SSE at
- * `/api/event-log/events`, and rendered by `serve-emu event-log`.
+ * `/api/event-log/events`, and rendered by `serve-avd event-log`.
  */
 
 export type EventLogSource = "hid" | "cli" | "server" | "ui";

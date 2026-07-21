@@ -1,12 +1,12 @@
 /**
- * serve-emu preview client. Vanilla DOM app: per-device stage (H.264 via
+ * serve-avd preview client. Vanilla DOM app: per-device stage (H.264 via
  * WebCodecs onto canvas, or MJPEG <img> fallback), full input forwarding over
  * the binary [tag][JSON] WebSocket, and side panes (devices / tools / logs).
  */
 import { AvccDemuxer, avcCodecString, isAvccSupported } from "./avcc-codec";
 import { icons, type IconName } from "./icons";
 
-declare const __SERVE_EMU_VERSION__: string | undefined;
+declare const __SERVE_AVD_VERSION__: string | undefined;
 
 interface BootConfig {
   basePath: string;
@@ -58,7 +58,7 @@ interface EventLogEntry {
   status?: string;
 }
 
-const BOOT: BootConfig = (window as unknown as { __SERVE_EMU__: BootConfig }).__SERVE_EMU__ ?? {
+const BOOT: BootConfig = (window as unknown as { __SERVE_AVD__: BootConfig }).__SERVE_AVD__ ?? {
   basePath: "",
   codec: "auto",
   initialState: {},
@@ -835,7 +835,7 @@ async function main(): Promise<void> {
     const res = await fetch(apiPath);
     api = (await res.json()) as ApiState;
   } catch {
-    app.replaceChildren(el("p", { class: "muted", text: "Failed to reach the serve-emu server." }));
+    app.replaceChildren(el("p", { class: "muted", text: "Failed to reach the serve-avd server." }));
     return;
   }
 
@@ -880,7 +880,7 @@ async function main(): Promise<void> {
   const header = el(
     "header",
     { class: "topbar" },
-    el("div", { class: "brand" }, el("span", { class: "logo", text: "▶" }), el("strong", { text: "serve-emu" }), el("span", { class: "muted", text: ` v${api.version}` })),
+    el("div", { class: "brand" }, el("span", { class: "logo", text: "▶" }), el("strong", { text: "serve-avd" }), el("span", { class: "muted", text: ` v${api.version}` })),
     el(
       "div",
       { class: "topbar-actions" },

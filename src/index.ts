@@ -1,5 +1,5 @@
 /**
- * serve-emu CLI — the `npx serve` of Android Emulators.
+ * serve-avd CLI — the `npx serve` of Android Emulators.
  *
  * Mirrors serve-sim's interface: the bare command starts a preview server,
  * subcommands drive a running server over its state file + input WebSocket.
@@ -24,7 +24,7 @@ import {
   readAllStates,
   removeStateForDevice,
   statePidAlive,
-  type ServeEmuDeviceState,
+  type ServeAvdDeviceState,
 } from "./state";
 import { subscribeEventLog, type EventLogEntry } from "./event-log";
 import { formatEventLogLine } from "./event-log-format";
@@ -33,8 +33,8 @@ import { ORIENTATIONS, DEBUG_FLAGS } from "./input";
 import { dumpUiHierarchy } from "./ax";
 import type { PreviewInitialState } from "./middleware";
 
-declare const __SERVE_EMU_VERSION__: string | undefined;
-const VERSION = typeof __SERVE_EMU_VERSION__ === "string" ? __SERVE_EMU_VERSION__ : "dev";
+declare const __SERVE_AVD_VERSION__: string | undefined;
+const VERSION = typeof __SERVE_AVD_VERSION__ === "string" ? __SERVE_AVD_VERSION__ : "dev";
 
 const DIM = "\x1b[90m";
 const BOLD = "\x1b[1m";
@@ -135,7 +135,7 @@ async function serve(devices: string[], opts: ServeOpts): Promise<void> {
     },
   });
 
-  const states: ServeEmuDeviceState[] = [];
+  const states: ServeAvdDeviceState[] = [];
   for (const serial of serials) {
     const state = await running.attach(serial);
     if (opts.theme) await peekDeviceSession(serial)?.injector.setTheme(opts.theme);
@@ -152,7 +152,7 @@ async function serve(devices: string[], opts: ServeOpts): Promise<void> {
   if (opts.quiet) {
     printStatesJSON(states);
   } else {
-    console.log(`\n  ${BOLD}serve-emu${RESET} ${DIM}v${VERSION}${RESET}\n`);
+    console.log(`\n  ${BOLD}serve-avd${RESET} ${DIM}v${VERSION}${RESET}\n`);
     for (const state of states) {
       const session = peekDeviceSession(state.device);
       console.log(`  ${GREEN}▸${RESET} ${BOLD}${session?.name ?? state.device}${RESET} ${DIM}(${state.device})${RESET}`);
@@ -179,7 +179,7 @@ async function detach(devices: string[], port: number | undefined, quiet: boolea
   child.unref();
 
   const deadline = Date.now() + 30_000;
-  const states: ServeEmuDeviceState[] = [];
+  const states: ServeAvdDeviceState[] = [];
   while (Date.now() < deadline && states.length < serials.length) {
     await new Promise((r) => setTimeout(r, 250));
     states.length = 0;
@@ -196,13 +196,13 @@ async function detach(devices: string[], port: number | undefined, quiet: boolea
   printStatesJSON(states);
 }
 
-function printStatesJSON(states: ServeEmuDeviceState[]): void {
+function printStatesJSON(states: ServeAvdDeviceState[]): void {
   console.log(JSON.stringify(states.length === 1 ? states[0] : states, null, 2));
 }
 
 // ── list / kill ────────────────────────────────────────────────────────────
 
-function aliveStates(device?: string): ServeEmuDeviceState[] {
+function aliveStates(device?: string): ServeAvdDeviceState[] {
   const states = readAllStates().filter((s) => {
     if (device && s.device !== device && s.name !== device) return false;
     if (!statePidAlive(s)) {
@@ -242,15 +242,15 @@ function killStreams(device?: string): void {
 
 // ── Talking to a running server ────────────────────────────────────────────
 
-function readState(device?: string): ServeEmuDeviceState | null {
+function readState(device?: string): ServeAvdDeviceState | null {
   const states = aliveStates(device);
   return states[0] ?? null;
 }
 
-function requireState(device?: string): ServeEmuDeviceState {
+function requireState(device?: string): ServeAvdDeviceState {
   const state = readState(device);
   if (!state) {
-    console.error("No serve-emu server running. Run `serve-emu` first.");
+    console.error("No serve-avd server running. Run `serve-avd` first.");
     process.exit(1);
   }
   return state;
@@ -258,7 +258,7 @@ function requireState(device?: string): ServeEmuDeviceState {
 
 /** Send `[tag][JSON]` frames over the server's input WebSocket. */
 function sendHid(
-  state: ServeEmuDeviceState,
+  state: ServeAvdDeviceState,
   frames: Array<{ tag: number; body?: unknown; delayAfterMs?: number }>,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -277,7 +277,7 @@ function sendHid(
       }, 80);
     });
     ws.on("error", () => {
-      console.error("Failed to connect to serve-emu server at", state.wsUrl);
+      console.error("Failed to connect to serve-avd server at", state.wsUrl);
       reject(new Error("WebSocket connection failed"));
     });
   });
@@ -301,9 +301,9 @@ async function tap(xArg: string, yArg: string, deviceArg?: string): Promise<void
   const x = Number(xArg);
   const y = Number(yArg);
   if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || x > 1 || y < 0 || y > 1) {
-    console.error("Usage: serve-emu tap <x> <y> [-d serial]");
+    console.error("Usage: serve-avd tap <x> <y> [-d serial]");
     console.error("  x, y are normalized 0..1 of the emulator screen");
-    console.error("  Example: serve-emu tap 0.5 0.9   # near bottom-center");
+    console.error("  Example: serve-avd tap 0.5 0.9   # near bottom-center");
     process.exit(1);
   }
   const state = requireState(deviceArg);
@@ -328,9 +328,9 @@ async function typeText(
 ): Promise<void> {
   const sourceCount = [positional.length > 0, opts.stdin ?? false, opts.file != null].filter(Boolean).length;
   if (sourceCount !== 1) {
-    console.error("Usage: serve-emu type <text> [-d serial]");
-    console.error("       serve-emu type --stdin [-d serial]");
-    console.error("       serve-emu type --file <path> [-d serial]");
+    console.error("Usage: serve-avd type <text> [-d serial]");
+    console.error("       serve-avd type --stdin [-d serial]");
+    console.error("       serve-avd type --file <path> [-d serial]");
     console.error("");
     console.error("Only ASCII characters are supported (A-Z, a-z, 0-9, space,");
     console.error("newline, tab, and standard punctuation).");
@@ -498,7 +498,7 @@ function parsePanes(value: string): string[] {
 const program = new Command();
 
 program
-  .name("serve-emu")
+  .name("serve-avd")
   .description("The `npx serve` of Android Emulators — stream, control, and share emulators from the browser.")
   .version(VERSION)
   .argument("[device...]", "adb serial(s) or AVD name(s) — default: every online device, booting an AVD when none are")
@@ -519,16 +519,16 @@ program
     "after",
     `
 Examples:
-  serve-emu                              Open emulator preview at localhost:3200
-  serve-emu Pixel_9_Pro_XL               Target an AVD by name (boots it if needed)
-  serve-emu emulator-5554 -p 8080        Preview a specific serial on a custom port
-  serve-emu --codec mjpeg                Force MJPEG (e.g. no WebCodecs in the browser)
-  serve-emu --panes devices,tools --fit  Open panes and fit the emulator to the viewport
-  serve-emu --theme dark                 Start the device in Dark Mode
-  serve-emu --no-preview                 Stream in foreground without the web UI
-  serve-emu --detach                     Start streaming in background (daemon)
-  serve-emu --list                       Show all running streams
-  serve-emu --kill                       Stop all streams`,
+  serve-avd                              Open emulator preview at localhost:3200
+  serve-avd Pixel_9_Pro_XL               Target an AVD by name (boots it if needed)
+  serve-avd emulator-5554 -p 8080        Preview a specific serial on a custom port
+  serve-avd --codec mjpeg                Force MJPEG (e.g. no WebCodecs in the browser)
+  serve-avd --panes devices,tools --fit  Open panes and fit the emulator to the viewport
+  serve-avd --theme dark                 Start the device in Dark Mode
+  serve-avd --no-preview                 Stream in foreground without the web UI
+  serve-avd --detach                     Start streaming in background (daemon)
+  serve-avd --list                       Show all running streams
+  serve-avd --kill                       Stop all streams`,
   )
   .action(async (devices: string[], opts) => {
     if (opts.list !== undefined) {

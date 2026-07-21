@@ -58,7 +58,7 @@ export function androidKeycodeForBrowserCode(code: string): number | null {
 }
 
 /**
- * Hardware/system buttons for `serve-emu button <name>` and browser toolbar
+ * Hardware/system buttons for `serve-avd button <name>` and browser toolbar
  * presses. Each maps to a keyevent, or a shell command for the few that have
  * no keycode (`cmd statusbar …`).
  */

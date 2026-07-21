@@ -38,7 +38,7 @@ export interface AxDump {
   root: AxNode | null;
 }
 
-const DUMP_PATH = "/sdcard/.serve-emu-ui.xml";
+const DUMP_PATH = "/sdcard/.serve-avd-ui.xml";
 
 /** Dump the current UI hierarchy as JSON. Throws when uiautomator fails (e.g. secure screens). */
 export async function dumpUiHierarchy(shell: AdbShell): Promise<AxDump> {

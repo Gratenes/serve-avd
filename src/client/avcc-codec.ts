@@ -1,5 +1,5 @@
 /**
- * Wire parser for the serve-emu `/stream.avcc` H.264 stream (format shared
+ * Wire parser for the serve-avd `/stream.avcc` H.264 stream (format shared
  * with serve-sim).
  *
  * Each chunk is a 4-byte big-endian length (covering the tag byte + payload)

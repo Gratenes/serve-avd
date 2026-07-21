@@ -2,10 +2,10 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { readdirSync, mkdirSync, writeFileSync, renameSync, readFileSync, rmSync } from "fs";
 
-/** Directory where serve-emu stores runtime state. */
-export const STATE_DIR = join(tmpdir(), "serve-emu");
+/** Directory where serve-avd stores runtime state. */
+export const STATE_DIR = join(tmpdir(), "serve-avd");
 
-/** Per-device state file: `$TMPDIR/serve-emu/server-{serial}.json` */
+/** Per-device state file: `$TMPDIR/serve-avd/server-{serial}.json` */
 export function stateFileForDevice(serial: string): string {
   return join(STATE_DIR, `server-${sanitize(serial)}.json`);
 }
@@ -16,7 +16,7 @@ function sanitize(serial: string): string {
 }
 
 /** Runtime record for a device streamed in-process by a preview server. */
-export interface ServeEmuDeviceState {
+export interface ServeAvdDeviceState {
   pid: number;
   port: number;
   /** adb serial, e.g. `emulator-5554`. */
@@ -34,13 +34,13 @@ export interface ServeEmuDeviceState {
  * `{base}/helper/<device>/…` routes, which emuMiddleware serves from an
  * adb-backed EmulatorSession.
  */
-export function inProcessServeEmuState(
+export function inProcessServeAvdState(
   serial: string,
   port: number,
   base = "/",
   host = "127.0.0.1",
   name?: string,
-): ServeEmuDeviceState {
+): ServeAvdDeviceState {
   const h = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
   // Normalize to a leading-slash, no-trailing-slash prefix so a base without a
   // leading slash (e.g. "foo") still yields well-formed `…:port/foo/helper/…`.
@@ -60,7 +60,7 @@ export function inProcessServeEmuState(
 /** Persist a device's state so other processes / the CLI can enumerate it.
  *  Writes atomically (temp file + rename) so a concurrent reader never observes
  *  a truncated or partially-written file. */
-export function writeServeEmuState(state: ServeEmuDeviceState): void {
+export function writeServeAvdState(state: ServeAvdDeviceState): void {
   mkdirSync(STATE_DIR, { recursive: true });
   const file = stateFileForDevice(state.device);
   const tmp = `${file}.${process.pid}.tmp`;
@@ -80,11 +80,11 @@ export function listStateFiles(): string[] {
 }
 
 /** Read every parseable device state, newest first. */
-export function readAllStates(): ServeEmuDeviceState[] {
-  const states: ServeEmuDeviceState[] = [];
+export function readAllStates(): ServeAvdDeviceState[] {
+  const states: ServeAvdDeviceState[] = [];
   for (const file of listStateFiles()) {
     try {
-      const parsed = JSON.parse(readFileSync(file, "utf8")) as ServeEmuDeviceState;
+      const parsed = JSON.parse(readFileSync(file, "utf8")) as ServeAvdDeviceState;
       if (parsed && typeof parsed.pid === "number" && typeof parsed.device === "string") {
         states.push(parsed);
       }
@@ -96,7 +96,7 @@ export function readAllStates(): ServeEmuDeviceState[] {
 }
 
 /** True when the recorded pid is still alive. */
-export function statePidAlive(state: ServeEmuDeviceState): boolean {
+export function statePidAlive(state: ServeAvdDeviceState): boolean {
   try {
     process.kill(state.pid, 0);
     return true;
