@@ -6,11 +6,11 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/robsandhu/serve-emu.git"
+    "url": "git+https://github.com/hsandhu/serve-emu.git"
   },
-  "homepage": "https://github.com/robsandhu/serve-emu#readme",
+  "homepage": "https://github.com/hsandhu/serve-emu#readme",
   "bugs": {
-    "url": "https://github.com/robsandhu/serve-emu/issues"
+    "url": "https://github.com/hsandhu/serve-emu/issues"
   },
   "keywords": [
     "android",
