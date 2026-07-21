@@ -4,6 +4,7 @@
  * the binary [tag][JSON] WebSocket, and side panes (devices / tools / logs).
  */
 import { AvccDemuxer, avcCodecString, isAvccSupported } from "./avcc-codec";
+import { icons, type IconName } from "./icons";
 
 declare const __SERVE_EMU_VERSION__: string | undefined;
 
@@ -96,6 +97,13 @@ function button(label: string, title: string, onClick: () => void, cls = ""): HT
   return b;
 }
 
+function iconButton(name: IconName, title: string, onClick: () => void): HTMLButtonElement {
+  const b = el("button", { class: "btn icon-btn", title, "aria-label": title, type: "button" });
+  b.innerHTML = icons[name];
+  b.addEventListener("click", onClick);
+  return b;
+}
+
 function wsUrl(path: string): string {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   return `${proto}//${location.host}${path}`;
@@ -123,6 +131,7 @@ class DeviceView {
   private awaitingKeyframe = true;
   private awaitingSince = 0;
   private streamAbort: AbortController | null = null;
+  private framesAtLastAbort = -1;
   private timestamp = 0;
   private framesDecoded = 0;
   private firstFrameSeen = false;
@@ -149,7 +158,7 @@ class DeviceView {
     this.ctx = ctx;
 
     this.statusChip = el("span", { class: "chip", text: "connecting" });
-    this.fpsChip = el("span", { class: "chip chip-dim", text: "– fps" });
+    this.fpsChip = el("span", { class: "chip chip-dim chip-fps", text: "– fps" });
     this.orientationChip = el("span", { class: "chip chip-dim", text: this.config.orientation });
 
     this.surfaceWrap = el("div", { class: "screen-wrap", tabindex: "0" }, this.canvas);
@@ -187,21 +196,21 @@ class DeviceView {
   private buildControls(): HTMLElement {
     const nav = el("div", { class: "nav-row" });
     nav.append(
-      button("◁", "Back", () => this.sendButton("back"), "nav"),
-      button("◯", "Home", () => this.sendButton("home"), "nav"),
-      button("▢", "Recent apps", () => this.sendButton("app-switch"), "nav"),
+      iconButton("back", "Back", () => this.sendButton("back")),
+      iconButton("home", "Home", () => this.sendButton("home")),
+      iconButton("recents", "Recent apps", () => this.sendButton("app-switch")),
     );
 
     const tools = el("div", { class: "tool-row" });
     tools.append(
-      button("⟲", "Rotate left", () => this.rotateStep(-1)),
-      button("⟳", "Rotate right", () => this.rotateStep(1)),
-      button("−", "Volume down", () => this.sendButton("volume-down")),
-      button("+", "Volume up", () => this.sendButton("volume-up")),
-      button("⏻", "Power", () => this.sendButton("power")),
-      button("◐", "Toggle light/dark theme", () => this.toggleTheme()),
-      button("⌨", "Toggle software keyboard", () => this.send(0x0c)),
-      button("📷", "Save screenshot", () => window.open(this.entry.screenshotEndpoint, "_blank")),
+      iconButton("rotateCcw", "Rotate left", () => this.rotateStep(-1)),
+      iconButton("rotateCw", "Rotate right", () => this.rotateStep(1)),
+      iconButton("volumeDown", "Volume down", () => this.sendButton("volume-down")),
+      iconButton("volumeUp", "Volume up", () => this.sendButton("volume-up")),
+      iconButton("power", "Power", () => this.sendButton("power")),
+      iconButton("moon", "Toggle light/dark theme", () => this.toggleTheme()),
+      iconButton("keyboard", "Toggle software keyboard", () => this.send(0x0c)),
+      iconButton("camera", "Save screenshot", () => window.open(this.entry.screenshotEndpoint, "_blank")),
     );
 
     return el("div", { class: "device-controls" }, nav, tools);
@@ -432,8 +441,15 @@ class DeviceView {
         this.fpsChip.textContent = `${fps} fps`;
         // Watchdog: stuck waiting for a keyframe (e.g. we joined mid-restart on
         // a static screen) → reconnect; the fresh GOP replay paints instantly.
-        if (this.awaitingSince && performance.now() - this.awaitingSince > 2_500) {
+        // Paced by progress: never re-abort unless frames flowed since the last
+        // abort, so a genuinely idle stream (no GOP yet) doesn't flap.
+        if (
+          this.awaitingSince &&
+          performance.now() - this.awaitingSince > 2_500 &&
+          this.framesDecoded !== this.framesAtLastAbort
+        ) {
           this.awaitingSince = 0;
+          this.framesAtLastAbort = this.framesDecoded;
           this.streamAbort?.abort();
         }
       }

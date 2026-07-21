@@ -77,6 +77,12 @@ export class VideoCapture {
 
   /** Total frames emitted (diagnostics). */
   framesEmitted = 0;
+  private lastFrameAt = 0;
+
+  /** True when video frames flowed within the last few seconds. */
+  get recentlyActive(): boolean {
+    return Date.now() - this.lastFrameAt < 5_000;
+  }
   /** Set when screenrecord keeps dying instantly — video is not available. */
   unavailable = false;
   onUnavailable?: (reason: string) => void;
@@ -237,12 +243,14 @@ export class VideoCapture {
       case "keyframe":
         this.sawFrame = true;
         this.framesEmitted++;
+        this.lastFrameAt = Date.now();
         this.gopFrames = [event.envelope];
         this.gopBytes = event.envelope.length;
         break;
       case "delta":
         this.sawFrame = true;
         this.framesEmitted++;
+        this.lastFrameAt = Date.now();
         // Only cache deltas that chain to a cached keyframe.
         if (this.gopFrames.length > 0) {
           this.gopFrames.push(event.envelope);

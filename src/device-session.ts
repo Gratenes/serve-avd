@@ -153,7 +153,11 @@ export class EmulatorSession {
     this.naturalHeight = geometry.height;
     this.rotation = await screenRotation(this.serial, this.shell);
     this.name = await deviceDisplayName(this.serial);
-    void this.injector.wake().catch(() => {});
+    // Wake the screen and keep it on while plugged in (emulators always are) —
+    // a mirror of a sleeping display is just a black rectangle. Awaited so the
+    // first screenrecord session doesn't start against a dark display.
+    await this.injector.wake().catch(() => {});
+    await this.shell.run("svc power stayon true").catch(() => {});
     this.video.start();
     this.rotationTimer = setInterval(() => void this.pollRotation(), ROTATION_POLL_MS);
     debug(
@@ -397,6 +401,9 @@ export class EmulatorSession {
 
   attachHidSocket(ws: HidSocket): void {
     this.hidSockets.add(ws);
+    // A viewer just arrived — if the stream has been quiet, nudge the screen
+    // awake so they don't stare at a black mirror (no-op on an awake display).
+    if (!this.video.recentlyActive) void this.injector.wake().catch(() => {});
     const cfg = this.configFrame();
     if (cfg) ws.send(cfg); // seed dimensions/orientation
     ws.on("message", (data: Buffer) =>
