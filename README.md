@@ -9,6 +9,8 @@ npx serve-emu
 # → Preview at http://localhost:3200
 ```
 
+https://github.com/user-attachments/assets/91ca0811-119e-46f6-8e3e-9b41bd9f9bd7
+
 `serve-emu` captures the emulator's screen via `adb screenrecord`, exposes it as an H.264 WebCodecs stream (with an MJPEG fallback) plus a WebSocket control channel, and serves a browser preview UI on top. It works with any running Android Emulator (and most physical devices over adb) — no root, no plugin, no instrumentation in your app.
 
 It is a faithful Android port of [serve-sim](https://github.com/EvanBacon/serve-sim) by Evan Bacon: same interface, same streaming design, same wire protocol — rebuilt on what Android and adb provide.
