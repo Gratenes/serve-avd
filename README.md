@@ -284,6 +284,4 @@ npm run typecheck
 
 ## Credit & License
 
-Interface, streaming design, and wire protocol are ported from [serve-sim](https://github.com/EvanBacon/serve-sim) (Apache-2.0) by [Evan Bacon](https://evanbacon.dev) — if you work with Apple platforms, use that.
-
 Apache-2.0
