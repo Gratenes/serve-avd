@@ -1,0 +1,70 @@
+{
+  "name": "serve-emu",
+  "version": "0.1.0",
+  "description": "The `npx serve` of Android Emulators — stream any emulator to the browser with full interaction, no instrumentation.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/robsandhu/serve-emu.git"
+  },
+  "homepage": "https://github.com/robsandhu/serve-emu#readme",
+  "bugs": {
+    "url": "https://github.com/robsandhu/serve-emu/issues"
+  },
+  "keywords": [
+    "android",
+    "emulator",
+    "adb",
+    "screen-mirroring",
+    "mjpeg",
+    "h264",
+    "webcodecs",
+    "preview",
+    "agent",
+    "mcp"
+  ],
+  "bin": {
+    "serve-emu": "dist/serve-emu.js"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "files": [
+    "dist/serve-emu.js",
+    "dist/middleware.js",
+    "dist/middleware.cjs",
+    "dist/client.js",
+    "dist/client.css",
+    "src/middleware.ts",
+    "src/state.ts"
+  ],
+  "exports": {
+    "./middleware": {
+      "types": "./src/middleware.ts",
+      "import": "./dist/middleware.js",
+      "require": "./dist/middleware.cjs"
+    },
+    "./state": {
+      "types": "./src/state.ts",
+      "import": "./src/state.ts"
+    }
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "commander": "^14.0.1",
+    "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/ws": "^8.18.1",
+    "esbuild": "^0.25.0",
+    "tsx": "^4.23.1",
+    "typescript": "^5.7.0"
+  }
+}
