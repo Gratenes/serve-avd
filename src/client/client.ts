@@ -201,15 +201,15 @@ class DeviceView {
       iconButton("recents", "Recent apps", () => this.sendButton("app-switch")),
     );
 
+    // Rotate left/right and the software-keyboard toggle are hidden for now —
+    // both remain available via the CLI (`serve-avd rotate …`) and the WS
+    // protocol (0x07 / 0x0c); re-add their iconButtons here to restore them.
     const tools = el("div", { class: "tool-row" });
     tools.append(
-      iconButton("rotateCcw", "Rotate left", () => this.rotateStep(-1)),
-      iconButton("rotateCw", "Rotate right", () => this.rotateStep(1)),
       iconButton("volumeDown", "Volume down", () => this.sendButton("volume-down")),
       iconButton("volumeUp", "Volume up", () => this.sendButton("volume-up")),
       iconButton("power", "Power", () => this.sendButton("power")),
       iconButton("moon", "Toggle light/dark theme", () => this.toggleTheme()),
-      iconButton("keyboard", "Toggle software keyboard", () => this.send(0x0c)),
       iconButton("camera", "Save screenshot", () => window.open(this.entry.screenshotEndpoint, "_blank")),
     );
 
