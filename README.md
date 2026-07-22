@@ -19,7 +19,7 @@ It is a faithful Android port of [serve-sim](https://github.com/EvanBacon/serve-
 
 - Smooth H.264 video stream in the browser (WebCodecs), with instant paint on connect — no waiting for the next frame.
 - Full interaction: tap, drag, and fling with the mouse; scroll with the wheel.
-- Android navigation from the browser: Back, Home, Recents, power, volume, rotate, theme toggle, screenshot.
+- Android navigation from the browser: Back, Home, Recents, power, volume, theme toggle, screenshot.
 - Keyboard forwarding — type into the emulator directly, Escape acts as Back, ⌘⇧H goes Home.
 - logcat is forwarded to the browser (and mirrored into the browser console for browser-use MCP tools to read).
 - Recent actions are available in the browser Tools panel and `serve-avd event-log`.
