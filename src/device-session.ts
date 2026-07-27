@@ -55,10 +55,16 @@ const CORS = {
 
 // WS server→client screen-config push.
 const WS_MSG_CONFIG = 0x82;
+// WS server→client notice ({ kind, ok, message }) — surfaced in the viewer.
+const WS_MSG_NOTICE = 0x83;
 
 const MJPEG_TRAILER = Buffer.from("\r\n", "ascii");
 const TOUCH_TAP_MAX_DISTANCE = 0.004;
 const ROTATION_POLL_MS = 1_000;
+/** Grace for the rotation animation before grabbing the repaint still. */
+const ROTATION_SEED_DELAY_MS = 400;
+/** Floor between viewer-requested capture restarts (a room of them asks at once). */
+const VIDEO_RESTART_MIN_INTERVAL_MS = 3_000;
 const LOGCAT_RING_MAX = 500;
 
 type TouchGestureLog = {
@@ -108,6 +114,8 @@ export class EmulatorSession {
   private readonly hidSockets = new Set<HidSocket>();
   private touchGestureLog?: TouchGestureLog;
   private pinchWarned = false;
+
+  private lastVideoRestartRequest = 0;
 
   private logcatProc: ChildProcess | null = null;
   private logcatRing: string[] = [];
@@ -202,22 +210,37 @@ export class EmulatorSession {
       const rotation = await screenRotation(this.serial, this.shell);
       if (rotation !== this.rotation) {
         debug(`rotation ${this.rotation} → ${rotation} for ${this.serial}`);
-        this.rotation = rotation;
-        this.broadcastConfig();
-        // screenrecord can't follow rotation — restart for a correctly-sized stream.
-        this.video.restart();
+        this.adoptRotation(rotation);
       }
     } catch {
       // transient adb hiccup — next poll retries
     }
   }
 
-  /** Adopt a rotation we initiated ourselves without waiting for the poll. */
+  /** Take on a rotation the device has already made. */
   private adoptRotation(rotation: number): void {
     if (rotation === this.rotation) return;
     this.rotation = rotation;
     this.broadcastConfig();
+    // screenrecord can't follow rotation — restart for a correctly-sized stream.
     this.video.restart();
+    void this.seedRotatedFrame();
+  }
+
+  /**
+   * Repaint viewers right after a rotation. Rotating is often the last thing
+   * that happens on a screen, so the fresh capture session has nothing to
+   * encode and everyone watching would sit on the pre-rotation frame until
+   * something else moves. A still at the new geometry covers that gap.
+   */
+  private async seedRotatedFrame(): Promise<void> {
+    try {
+      await new Promise((resolve) => setTimeout(resolve, ROTATION_SEED_DELAY_MS)); // let the animation land
+      const shot = await this.still.screenshot(2_000);
+      if (shot) this.video.broadcastSeed(wrapEnvelope(AVCC_TAG_SEED, shot.data));
+    } catch {
+      // best effort — the next real frame corrects the view anyway
+    }
   }
 
   // ── HTTP handlers ────────────────────────────────────────────────────────
@@ -475,9 +498,17 @@ export class EmulatorSession {
         case 0x07: {
           const m = json<{ orientation: string }>();
           if (!m) break;
-          this.record({ kind: "rotate", action: m.orientation, summary: `Rotate ${m.orientation}` });
-          const rotation = await this.injector.rotate(m.orientation);
-          this.adoptRotation(rotation);
+          const entry = this.record({ kind: "rotate", action: m.orientation, summary: `Rotate ${m.orientation}` });
+          const result = await this.injector.rotate(m.orientation);
+          this.adoptRotation(result.rotation);
+          if (!result.applied) {
+            const message = `${m.orientation} refused — the foreground app is orientation-locked`;
+            updateEventLogEvent(entry.id, { summary: `Rotate ${message}`, status: "error" });
+            this.notify({ kind: "rotate", ok: false, message });
+          }
+          // Always push the config, applied or not: the viewer is waiting on it
+          // to settle its own pending-rotation state.
+          this.broadcastConfig();
           break;
         }
         case 0x08: {
@@ -519,6 +550,13 @@ export class EmulatorSession {
           }
           break;
         }
+        case 0x0f: {
+          // A viewer can't decode what we're sending. A truncated tail NAL
+          // reaches the GOP cache now and then, and screenrecord may not emit
+          // another IDR for minutes — so the only way out is a fresh session.
+          this.requestVideoRestart();
+          break;
+        }
         case 0x0e: {
           const m = json<{ theme: "light" | "dark" }>();
           if (m && (m.theme === "light" || m.theme === "dark")) {
@@ -546,8 +584,8 @@ export class EmulatorSession {
     action?: string;
     details?: Record<string, unknown>;
     status?: "ok" | "error";
-  }): void {
-    recordEventLogEvent({ device: this.serial, source: "hid", ...entry });
+  }) {
+    return recordEventLogEvent({ device: this.serial, source: "hid", ...entry });
   }
 
   private recordTouchEvent(payload: { type: string; x: number; y: number }): void {
@@ -640,6 +678,21 @@ export class EmulatorSession {
   private broadcastConfig(): void {
     const frame = this.configFrame();
     if (!frame) return;
+    for (const ws of this.hidSockets) ws.send(frame);
+  }
+
+  /** Re-arm capture on a viewer's request, rate-limited against a room of them. */
+  private requestVideoRestart(): void {
+    const now = Date.now();
+    if (now - this.lastVideoRestartRequest < VIDEO_RESTART_MIN_INTERVAL_MS) return;
+    this.lastVideoRestartRequest = now;
+    debug(`viewer asked for a fresh keyframe on ${this.serial}`);
+    this.video.restart();
+  }
+
+  /** Push a one-off notice to every attached viewer. */
+  private notify(notice: { kind: string; ok: boolean; message: string }): void {
+    const frame = Buffer.concat([Buffer.from([WS_MSG_NOTICE]), Buffer.from(JSON.stringify(notice))]);
     for (const ws of this.hidSockets) ws.send(frame);
   }
 

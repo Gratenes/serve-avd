@@ -41,7 +41,7 @@ export interface VideoCaptureOptions {
   size?: string;
 }
 
-export type VideoSubscriber = (envelope: Buffer, kind: AvccEvent["kind"]) => void;
+export type VideoSubscriber = (envelope: Buffer, kind: AvccEvent["kind"] | "seed") => void;
 
 /**
  * Without an explicit `--size`, screenrecord silently falls back to 720x1280
@@ -69,6 +69,8 @@ export class VideoCapture {
   private spawnedAt = 0;
   private fastExits = 0;
   private sawFrame = false;
+  /** True between our own SIGKILL and the resulting `exit` (restart, not failure). */
+  private killing = false;
   private lastStderr = "";
 
   private description: Buffer | null = null;
@@ -145,6 +147,20 @@ export class VideoCapture {
     return this.gopFrames.length > 0;
   }
 
+  /**
+   * Fan out a pre-wrapped envelope (a still seed) to current viewers without
+   * caching it — it isn't part of the GOP and must not be replayed to joiners.
+   */
+  broadcastSeed(envelope: Buffer): void {
+    for (const cb of this.subscribers) {
+      try {
+        cb(envelope, "seed");
+      } catch (err) {
+        debug("subscriber error", err);
+      }
+    }
+  }
+
   private spawnProc(): void {
     if (!this.running || this.proc) return;
     const args = [
@@ -170,7 +186,18 @@ export class VideoCapture {
     this.proc = proc;
     debug(`spawned screenrecord for ${this.serial} (pid ${proc.pid})`);
 
-    proc.stdout!.on("data", (chunk: Buffer) => this.onChunk(chunk));
+    // Bind the handler to *this* process: a killed session's stdout keeps
+    // draining after its `exit` fires, and those bytes must not land in the
+    // successor's parser — a half-NAL tail spliced onto the new stream makes
+    // the first keyframe undecodable, which strands every viewer (they drop
+    // deltas while waiting for a keyframe that only comes with the next IDR).
+    proc.stdout!.on("data", (chunk: Buffer) => {
+      if (this.proc !== proc) {
+        debug(`dropping ${chunk.length}B from a stale screenrecord for ${this.serial}`);
+        return;
+      }
+      this.onChunk(chunk);
+    });
     proc.stderr!.on("data", (chunk: Buffer) => {
       this.lastStderr = (this.lastStderr + chunk.toString("utf8")).slice(-2000);
     });
@@ -181,12 +208,24 @@ export class VideoCapture {
     proc.on("exit", (code, signal) => {
       if (this.proc !== proc) return;
       this.proc = null;
+      // The session is over: flush its tail now, and drop the settle-timer
+      // flush it had queued so it can't fire against the successor's encoder.
+      if (this.settleTimer) {
+        clearTimeout(this.settleTimer);
+        this.settleTimer = null;
+      }
       for (const event of this.encoder.flush()) this.dispatch(event);
       debug(`screenrecord for ${this.serial} exited (code=${code} signal=${signal})`);
 
+      // A session *we* killed says nothing about the encoder: rotating twice in
+      // quick succession would otherwise look like two size rejections and walk
+      // the capture down to 720p for the rest of the session.
+      const deliberate = this.killing;
+      this.killing = false;
+
       if (!this.running) return;
       const lifetime = Date.now() - this.spawnedAt;
-      if (lifetime < FAST_EXIT_MS && !this.sawFrame) {
+      if (!deliberate && lifetime < FAST_EXIT_MS && !this.sawFrame) {
         this.fastExits++;
         // The encoder may reject the requested size — retry smaller first.
         if (!this.options.size && this.sizeCapIndex < SIZE_CAPS.length - 1) {
@@ -214,6 +253,7 @@ export class VideoCapture {
   private killProc(): void {
     const proc = this.proc;
     if (!proc) return;
+    this.killing = true;
     try {
       proc.kill("SIGKILL");
     } catch {}

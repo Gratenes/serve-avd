@@ -66,6 +66,8 @@ const BOOT: BootConfig = (window as unknown as { __SERVE_AVD__: BootConfig }).__
 };
 
 const ORIENTATIONS = ["portrait", "landscape_left", "portrait_upside_down", "landscape_right"];
+/** Floor between "send me a fresh keyframe" pokes at the server. */
+const KEYFRAME_REQUEST_MIN_MS = 3_000;
 const DEBUG_FLAGS = ["overdraw", "gpu-profile", "layout-bounds", "show-taps", "pointer-location", "slow-animations"];
 
 // ── Tiny DOM helpers ───────────────────────────────────────────────────────
@@ -120,6 +122,10 @@ class DeviceView {
   private readonly statusChip: HTMLElement;
   private readonly fpsChip: HTMLElement;
   private readonly orientationChip: HTMLElement;
+  private readonly notice: HTMLElement;
+  private pendingOrientation: string | null = null;
+  private pendingTimer: number | null = null;
+  private noticeTimer: number | null = null;
 
   private ws: WebSocket | null = null;
   private wsQueue: Uint8Array[] = [];
@@ -132,10 +138,13 @@ class DeviceView {
   private awaitingSince = 0;
   private streamAbort: AbortController | null = null;
   private framesAtLastAbort = -1;
+  private stalledAborts = 0;
+  private lastKeyframeRequest = -Infinity;
   private timestamp = 0;
   private framesDecoded = 0;
   private firstFrameSeen = false;
   private mode: "h264" | "mjpeg" = "mjpeg";
+  private frameSize: { width: number; height: number } | null = null;
 
   private lastMoveSent = 0;
   private pinch: { anchorX: number; anchorY: number } | null = null;
@@ -157,11 +166,12 @@ class DeviceView {
     if (!ctx) throw new Error("2d context unavailable");
     this.ctx = ctx;
 
-    this.statusChip = el("span", { class: "chip", text: "connecting" });
+    this.statusChip = el("span", { class: "chip chip-status", text: "connecting" });
     this.fpsChip = el("span", { class: "chip chip-dim chip-fps", text: "– fps" });
     this.orientationChip = el("span", { class: "chip chip-dim", text: this.config.orientation });
 
-    this.surfaceWrap = el("div", { class: "screen-wrap", tabindex: "0" }, this.canvas);
+    this.notice = el("div", { class: "device-notice hidden" });
+    this.surfaceWrap = el("div", { class: "screen-wrap", tabindex: "0" }, this.canvas, this.notice);
 
     this.root = el(
       "section",
@@ -185,10 +195,25 @@ class DeviceView {
 
   // ── Layout ───────────────────────────────────────────────────────────────
 
+  /**
+   * Shape the stage from the frames actually on screen, falling back to the
+   * reported config before the first frame lands. Rotating restarts capture,
+   * so the new geometry trails the config push by a beat — reshaping on the
+   * push alone would letterbox the old frames inside the new aspect until the
+   * stream caught up.
+   */
   private applyAspect(): void {
-    const { width, height } = this.config;
+    const { width, height } = this.frameSize ?? this.config;
+    if (!(width > 0 && height > 0)) return;
     this.surfaceWrap.style.aspectRatio = `${width} / ${height}`;
     this.root.classList.toggle("landscape", width > height);
+  }
+
+  private noteFrameSize(width: number, height: number): void {
+    if (!(width > 0 && height > 0)) return;
+    if (this.frameSize && this.frameSize.width === width && this.frameSize.height === height) return;
+    this.frameSize = { width, height };
+    this.applyAspect();
   }
 
   // ── Controls ─────────────────────────────────────────────────────────────
@@ -201,11 +226,14 @@ class DeviceView {
       iconButton("recents", "Recent apps", () => this.sendButton("app-switch")),
     );
 
-    // Rotate left/right and the software-keyboard toggle are hidden for now —
-    // both remain available via the CLI (`serve-avd rotate …`) and the WS
-    // protocol (0x07 / 0x0c); re-add their iconButtons here to restore them.
+    // The software-keyboard toggle is hidden for now — still available via the
+    // WS protocol (0x0c); re-add its iconButton here to restore it.
     const tools = el("div", { class: "tool-row" });
     tools.append(
+      // Rotate *the device*, as the orientation names read: turning it left
+      // (counter-clockwise) is ROTATION_90 = landscape_left, i.e. +1 here.
+      iconButton("rotateCcw", "Rotate left", () => this.rotateStep(1)),
+      iconButton("rotateCw", "Rotate right", () => this.rotateStep(-1)),
       iconButton("volumeDown", "Volume down", () => this.sendButton("volume-down")),
       iconButton("volumeUp", "Volume up", () => this.sendButton("volume-up")),
       iconButton("power", "Power", () => this.sendButton("power")),
@@ -216,10 +244,42 @@ class DeviceView {
     return el("div", { class: "device-controls" }, nav, tools);
   }
 
+  /**
+   * Step the orientation by `delta` quarter-turns. Steps from the request in
+   * flight rather than from `config`, which only advances once the device has
+   * actually rotated — otherwise a second click before the device catches up
+   * re-sends the orientation already requested.
+   */
   private rotateStep(delta: number): void {
-    const idx = ORIENTATIONS.indexOf(this.config.orientation);
+    const base = this.pendingOrientation ?? this.config.orientation;
+    const idx = Math.max(0, ORIENTATIONS.indexOf(base));
     const next = ORIENTATIONS[(idx + delta + ORIENTATIONS.length) % ORIENTATIONS.length]!;
+    this.pendingOrientation = next;
+    this.orientationChip.textContent = `${next}…`;
+    // Safety net for a dropped socket. Longer than the server's confirmation
+    // budget, so the chip doesn't snap back just before the answer arrives.
+    if (this.pendingTimer !== null) clearTimeout(this.pendingTimer);
+    this.pendingTimer = window.setTimeout(() => this.settleOrientation(), 10_000);
     this.send(0x07, { orientation: next });
+  }
+
+  /** Drop any in-flight rotation and show what the device is actually doing. */
+  private settleOrientation(): void {
+    if (this.pendingTimer !== null) clearTimeout(this.pendingTimer);
+    this.pendingTimer = null;
+    this.pendingOrientation = null;
+    this.orientationChip.textContent = this.config.orientation;
+  }
+
+  /** Transient message over the device frame (rotation refused, etc.). */
+  private showNotice(message: string, ok: boolean): void {
+    this.notice.textContent = message;
+    this.notice.className = `device-notice ${ok ? "" : "error"}`.trim();
+    if (this.noticeTimer !== null) clearTimeout(this.noticeTimer);
+    this.noticeTimer = window.setTimeout(() => {
+      this.notice.className = "device-notice hidden";
+      this.noticeTimer = null;
+    }, 4_000);
   }
 
   private toggleTheme(): void {
@@ -231,6 +291,12 @@ class DeviceView {
     this.send(0x04, { button: name });
   }
 
+  /** Stream state readout — `live` colours the dot green. */
+  private setStatus(text: string, live: boolean): void {
+    this.statusChip.textContent = text;
+    this.statusChip.classList.toggle("live", live);
+  }
+
   // ── WebSocket ────────────────────────────────────────────────────────────
 
   private connectWs(): void {
@@ -239,25 +305,31 @@ class DeviceView {
     ws.binaryType = "arraybuffer";
     this.ws = ws;
     ws.onopen = () => {
-      this.statusChip.textContent = this.mode === "h264" ? "H.264" : "MJPEG";
+      this.setStatus(this.mode === "h264" ? "H.264" : "MJPEG", true);
       for (const frame of this.wsQueue) ws.send(frame);
       this.wsQueue = [];
     };
     ws.onmessage = (event) => {
       const data = new Uint8Array(event.data as ArrayBuffer);
-      if (data.length > 0 && data[0] === 0x82) {
+      if (data.length === 0) return;
+      const text = () => new TextDecoder().decode(data.subarray(1));
+      if (data[0] === 0x82) {
         try {
-          const cfg = JSON.parse(new TextDecoder().decode(data.subarray(1))) as ScreenConfig;
-          this.config = cfg;
-          this.orientationChip.textContent = cfg.orientation;
+          this.config = JSON.parse(text()) as ScreenConfig;
+          this.settleOrientation();
           this.applyAspect();
+        } catch {}
+      } else if (data[0] === 0x83) {
+        try {
+          const notice = JSON.parse(text()) as { kind: string; ok: boolean; message: string };
+          this.showNotice(notice.message, notice.ok);
         } catch {}
       }
     };
     ws.onclose = () => {
       this.ws = null;
       if (!this.closed) {
-        this.statusChip.textContent = "reconnecting";
+        this.setStatus("reconnecting", false);
         setTimeout(() => this.connectWs(), 1_000);
       }
     };
@@ -287,7 +359,7 @@ class DeviceView {
   }
 
   private runMjpegStream(): void {
-    this.statusChip.textContent = "MJPEG";
+    this.setStatus("MJPEG", true);
     this.fpsChip.textContent = "stills";
     const img = el("img", { class: "screen-canvas", alt: this.entry.name });
     this.img = img;
@@ -310,7 +382,7 @@ class DeviceView {
         this.streamAbort = new AbortController();
         const response = await fetch(this.entry.streamAvccEndpoint, { signal: this.streamAbort.signal });
         if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
-        this.statusChip.textContent = "H.264";
+        this.setStatus("H.264", true);
         backoff = 500;
         demuxer.reset();
         const reader = response.body.getReader();
@@ -325,7 +397,7 @@ class DeviceView {
       }
       this.teardownDecoder();
       if (this.closed) return;
-      this.statusChip.textContent = "reconnecting";
+      this.setStatus("reconnecting", false);
       await new Promise((r) => setTimeout(r, backoff));
       backoff = Math.min(backoff * 2, 4_000);
     }
@@ -333,7 +405,10 @@ class DeviceView {
 
   private onAvccChunk(type: "description" | "keyframe" | "delta" | "seed", payload: Uint8Array): void {
     if (type === "seed") {
-      if (!this.firstFrameSeen) void this.paintSeed(payload);
+      // Seeds arrive before the first decoded frame *and* after a rotation, to
+      // repaint a stream that has nothing new to encode. paintSeed yields to
+      // any real frame that lands while it decodes.
+      void this.paintSeed(payload);
       return;
     }
     if (type === "description") {
@@ -394,6 +469,17 @@ class DeviceView {
   private recoverDecoder(): void {
     // Reconfigure from the last description and wait for the next keyframe.
     if (this.lastDescription) this.configureDecoder(this.lastDescription);
+    // The keyframe we just choked on is the one the server has cached, so
+    // reconnecting would replay it. Ask for a new capture session instead.
+    this.requestFreshKeyframe();
+  }
+
+  /** Tell the server our stream is undecodable and we need fresh SPS/IDR. */
+  private requestFreshKeyframe(): void {
+    const now = performance.now();
+    if (now - this.lastKeyframeRequest < KEYFRAME_REQUEST_MIN_MS) return;
+    this.lastKeyframeRequest = now;
+    this.send(0x0f);
   }
 
   private teardownDecoder(): void {
@@ -411,45 +497,57 @@ class DeviceView {
     if (this.canvas.width !== width || this.canvas.height !== height) {
       this.canvas.width = width;
       this.canvas.height = height;
+      this.noteFrameSize(width, height);
     }
     this.ctx.drawImage(frame, 0, 0, width, height);
     frame.close();
     this.firstFrameSeen = true;
     this.framesDecoded++;
+    this.stalledAborts = 0;
   }
 
   private async paintSeed(payload: Uint8Array): Promise<void> {
+    const framesAtStart = this.framesDecoded;
     try {
       const bitmap = await createImageBitmap(new Blob([payload as BlobPart]));
-      if (this.firstFrameSeen) return; // a real frame beat us
+      if (this.framesDecoded !== framesAtStart) return; // a real frame beat us
       if (this.canvas.width !== bitmap.width || this.canvas.height !== bitmap.height) {
         this.canvas.width = bitmap.width;
         this.canvas.height = bitmap.height;
+        this.noteFrameSize(bitmap.width, bitmap.height);
       }
       this.ctx.drawImage(bitmap, 0, 0);
       bitmap.close();
     } catch {}
   }
 
+  /** How long to wait on a keyframe before reconnecting — grows while fruitless. */
+  private awaitingBudgetMs(): number {
+    return Math.min(2_500 * 2 ** this.stalledAborts, 20_000);
+  }
+
   private startFpsLoop(): void {
     let lastCount = 0;
     const tick = () => {
       if (this.closed) return;
+      if (this.img) this.noteFrameSize(this.img.naturalWidth, this.img.naturalHeight);
       if (this.mode === "h264") {
         const fps = this.framesDecoded - lastCount;
         lastCount = this.framesDecoded;
         this.fpsChip.textContent = `${fps} fps`;
-        // Watchdog: stuck waiting for a keyframe (e.g. we joined mid-restart on
-        // a static screen) → reconnect; the fresh GOP replay paints instantly.
-        // Paced by progress: never re-abort unless frames flowed since the last
-        // abort, so a genuinely idle stream (no GOP yet) doesn't flap.
-        if (
-          this.awaitingSince &&
-          performance.now() - this.awaitingSince > 2_500 &&
-          this.framesDecoded !== this.framesAtLastAbort
-        ) {
+        // Watchdog: stuck waiting for a keyframe (we joined mid-restart on a
+        // static screen, or a keyframe failed to decode) → reconnect; the fresh
+        // GOP replay paints instantly. Retries back off instead of stopping
+        // after one fruitless attempt: screenrecord may not emit another IDR
+        // for minutes, so a viewer that gives up stays frozen that whole time.
+        // The backoff is what keeps a genuinely idle stream from flapping.
+        if (this.awaitingSince && performance.now() - this.awaitingSince > this.awaitingBudgetMs()) {
+          this.stalledAborts = this.framesDecoded === this.framesAtLastAbort ? this.stalledAborts + 1 : 0;
           this.awaitingSince = 0;
           this.framesAtLastAbort = this.framesDecoded;
+          // Reconnecting replays the cached GOP; if that already failed us
+          // once, the cache itself is the problem — ask for a new one.
+          if (this.stalledAborts > 0) this.requestFreshKeyframe();
           this.streamAbort?.abort();
         }
       }

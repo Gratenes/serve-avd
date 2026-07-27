@@ -19,7 +19,7 @@ It is a faithful Android port of [serve-sim](https://github.com/EvanBacon/serve-
 
 - Smooth H.264 video stream in the browser (WebCodecs), with instant paint on connect — no waiting for the next frame.
 - Full interaction: tap, drag, and fling with the mouse; scroll with the wheel.
-- Android navigation from the browser: Back, Home, Recents, power, volume, theme toggle, screenshot.
+- Android navigation from the browser: Back, Home, Recents, power, volume, rotate, theme toggle, screenshot.
 - Keyboard forwarding — type into the emulator directly, Escape acts as Back, ⌘⇧H goes Home.
 - logcat is forwarded to the browser (and mirrored into the browser console for browser-use MCP tools to read).
 - Recent actions are available in the browser Tools panel and `serve-avd event-log`.
@@ -169,9 +169,10 @@ The input WebSocket accepts binary `[tag][JSON]` frames (all coordinates normali
 0x0c toggle software keyboard
 0x0d text      {"text":"hello"}
 0x0e theme     {"theme":"dark"}
+0x0f keyframe  (no body — viewer can't decode; re-arm capture for fresh SPS/IDR)
 ```
 
-The server pushes `0x82` + JSON screen config whenever dimensions or orientation change.
+The server pushes `0x82` + JSON screen config whenever dimensions or orientation change, and `0x83` + `{"kind","ok","message"}` for one-off notices (e.g. a rotation the device refused).
 
 ## Connectors
 
@@ -271,7 +272,7 @@ No native code, no device daemons: the npm package is plain Node + `adb`.
 ## Caveats
 
 - `type` supports ASCII only (Android's `input text` limitation) — matching serve-sim's "US keyboard only".
-- Apps that lock their orientation (launchers do) won't visibly rotate, exactly like hardware.
+- Apps that lock their orientation (launchers do) won't visibly rotate, exactly like hardware. The rotation is confirmed against the device, so the preview stays put and says so instead of pretending.
 - Pinch requires a rootable (non-Play) emulator image.
 - Physical devices work for everything except AVD-specific features (boot-by-name, emulator camera flags); enable USB debugging and expect `screenrecord` limits to vary by OEM.
 
