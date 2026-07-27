@@ -8,7 +8,7 @@
  * multi-touch (protocol B) via `sendevent` chains against the emulator's
  * virtual touchscreen — probed, and skipped gracefully when unavailable.
  */
-import { AdbShell } from "./adb";
+import { AdbShell, screenRotation } from "./adb";
 import { BUTTONS } from "./keymap";
 import { textToSteps, shellQuote, type TextStep } from "./keymap";
 import { createDebug } from "./debug";
@@ -25,6 +25,22 @@ export const ORIENTATIONS: Record<string, number> = {
 export function orientationNameForRotation(rotation: number): string {
   return Object.keys(ORIENTATIONS).find((k) => ORIENTATIONS[k] === rotation) ?? "portrait";
 }
+
+/** Outcome of a rotation request — `applied` is false when the device refused. */
+export interface RotateResult {
+  requested: number;
+  /** The rotation the display actually settled on. */
+  rotation: number;
+  applied: boolean;
+}
+
+// A honoured rotation lands in ~1s on an idle emulator but was measured as slow
+// as 4.4s under load; a refused one never lands. Budget past the slow case —
+// reporting "refused" for a rotation that was merely late is the worse error,
+// and the session's own rotation poll surfaces a late one within a second
+// regardless, so a generous budget costs the viewer nothing.
+const ROTATION_SETTLE_MS = 6_000;
+const ROTATION_POLL_MS = 150;
 
 /** Android render/debug toggles (the ca-debug analog). */
 export const DEBUG_FLAGS: Record<string, { on: string; off: string; refresh?: boolean }> = {
@@ -293,23 +309,45 @@ export class InputInjector {
 
   // ── Device state ─────────────────────────────────────────────────────────
 
-  async rotate(orientation: string): Promise<number> {
-    const rotation = ORIENTATIONS[orientation];
-    if (rotation == null) {
+  /**
+   * Request a display rotation and report what the device actually did.
+   *
+   * `wm user-rotation lock` exits 0 whether or not the window manager honours
+   * the request — an orientation-locked foreground app (the launcher, most
+   * games) pins the display, exactly like hardware rotation. And when it *is*
+   * honoured the new rotation lands a beat later, not synchronously. So the
+   * request is confirmed by reading the rotation back: assuming it took mis-
+   * sizes the capture and the touch mapping until the next poll corrects it.
+   */
+  async rotate(orientation: string): Promise<RotateResult> {
+    const requested = ORIENTATIONS[orientation];
+    if (requested == null) {
       throw new Error(
         `Unknown orientation '${orientation}' (expected ${Object.keys(ORIENTATIONS).join(" | ")})`,
       );
     }
     // `wm user-rotation lock` reliably re-evaluates the window manager on
-    // modern Android; raw settings writes don't always. Apps that lock their
-    // orientation (e.g. the launcher) still won't rotate — same as hardware.
-    const result = await this.shell.runWithCode(`wm user-rotation lock ${rotation}`);
+    // modern Android; raw settings writes don't always.
+    const result = await this.shell.runWithCode(`wm user-rotation lock ${requested}`);
     if (result.code !== 0) {
       await this.shell.run(
-        `settings put system accelerometer_rotation 0; settings put system user_rotation ${rotation}`,
+        `settings put system accelerometer_rotation 0; settings put system user_rotation ${requested}`,
       );
     }
-    return rotation;
+    const rotation = await this.awaitRotation(requested);
+    const applied = rotation === requested;
+    if (!applied) debug(`rotation ${requested} refused for ${this.serial} (still ${rotation})`);
+    return { requested, rotation, applied };
+  }
+
+  /** Poll the real rotation until it reaches `target` or the budget runs out. */
+  private async awaitRotation(target: number): Promise<number> {
+    const deadline = Date.now() + ROTATION_SETTLE_MS;
+    for (;;) {
+      const rotation = await screenRotation(this.serial, this.shell);
+      if (rotation === target || Date.now() >= deadline) return rotation;
+      await new Promise((resolve) => setTimeout(resolve, ROTATION_POLL_MS));
+    }
   }
 
   async setDebugFlag(option: string, enabled: boolean): Promise<void> {

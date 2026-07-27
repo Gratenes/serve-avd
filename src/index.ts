@@ -256,14 +256,44 @@ function requireState(device?: string): ServeAvdDeviceState {
   return state;
 }
 
-/** Send `[tag][JSON]` frames over the server's input WebSocket. */
+/**
+ * Send `[tag][JSON]` frames over the server's input WebSocket.
+ *
+ * `awaitReply` holds the socket open until the server pushes a frame it
+ * accepts (or `awaitTimeoutMs` elapses) — for commands whose effect lands
+ * asynchronously on the device, so a scripted `rotate && screenshot` sees the
+ * result rather than racing it.
+ */
 function sendHid(
   state: ServeAvdDeviceState,
   frames: Array<{ tag: number; body?: unknown; delayAfterMs?: number }>,
+  options: { awaitReply?: (tag: number, body: unknown) => boolean; awaitTimeoutMs?: number } = {},
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(state.wsUrl);
     ws.binaryType = "arraybuffer";
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer); // else the pending timer holds the CLI open
+      ws.close();
+      resolve();
+    };
+    if (options.awaitReply) {
+      ws.on("message", (data: Buffer) => {
+        const buf = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
+        if (buf.length < 1) return;
+        let body: unknown = null;
+        try {
+          body = JSON.parse(buf.subarray(1).toString("utf8"));
+        } catch {
+          return;
+        }
+        if (options.awaitReply!(buf[0]!, body)) finish();
+      });
+    }
     ws.on("open", async () => {
       for (const frame of frames) {
         const json = frame.body === undefined ? Buffer.alloc(0) : Buffer.from(JSON.stringify(frame.body));
@@ -271,10 +301,7 @@ function sendHid(
         ws.send(msg);
         if (frame.delayAfterMs) await new Promise((r) => setTimeout(r, frame.delayAfterMs));
       }
-      setTimeout(() => {
-        ws.close();
-        resolve();
-      }, 80);
+      timer = setTimeout(finish, options.awaitReply ? (options.awaitTimeoutMs ?? 8_000) : 80);
     });
     ws.on("error", () => {
       console.error("Failed to connect to serve-avd server at", state.wsUrl);
@@ -372,7 +399,21 @@ async function rotate(orientation: string, deviceArg?: string): Promise<void> {
     process.exit(1);
   }
   const state = requireState(deviceArg);
-  await sendHid(state, [{ tag: 0x07, body: { orientation }, delayAfterMs: 300 }]);
+  // Return once the device is actually there (config push carrying the new
+  // orientation) or the server reports it refused — not on a fixed delay, so a
+  // scripted `rotate && screenshot` captures the new orientation.
+  let refused = false;
+  await sendHid(state, [{ tag: 0x07, body: { orientation } }], {
+    awaitReply: (tag, body) => {
+      if (tag === 0x83) {
+        refused = true;
+        console.error(`Rotation ${(body as { message?: string }).message ?? "refused"}`);
+        return true;
+      }
+      return tag === 0x82 && (body as { orientation?: string }).orientation === orientation;
+    },
+  });
+  if (refused) process.exitCode = 1;
 }
 
 async function debugFlag(option: string, stateArg: string, deviceArg?: string): Promise<void> {
