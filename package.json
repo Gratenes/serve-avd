@@ -1,7 +1,7 @@
 {
   "name": "serve-avd",
-  "version": "0.1.1",
-  "description": "The `npx serve` of Android Emulators — stream any emulator to the browser with full interaction, no instrumentation.",
+  "version": "0.1.2",
+  "description": "The `npx serve` of Android Emulators \u2014 stream any emulator to the browser with full interaction, no instrumentation.",
   "type": "module",
   "license": "Apache-2.0",
   "repository": {
@@ -22,7 +22,11 @@
     "webcodecs",
     "preview",
     "agent",
-    "mcp"
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "uiautomator",
+    "test-automation"
   ],
   "bin": {
     "serve-avd": "dist/serve-avd.js"
@@ -34,16 +38,28 @@
     "dist/serve-avd.js",
     "dist/middleware.js",
     "dist/middleware.cjs",
+    "dist/sdk.js",
+    "dist/sdk.cjs",
     "dist/client.js",
     "dist/client.css",
     "src/middleware.ts",
-    "src/state.ts"
+    "src/state.ts",
+    "src/sdk.ts",
+    "src/ax.ts",
+    "src/adb.ts",
+    "src/actions.ts",
+    "src/replay.ts"
   ],
   "exports": {
     "./middleware": {
       "types": "./src/middleware.ts",
       "import": "./dist/middleware.js",
       "require": "./dist/middleware.cjs"
+    },
+    "./client": {
+      "types": "./src/sdk.ts",
+      "import": "./dist/sdk.js",
+      "require": "./dist/sdk.cjs"
     },
     "./state": {
       "types": "./src/state.ts",

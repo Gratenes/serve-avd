@@ -91,6 +91,51 @@ export function adbExecOut(serial: string, args: string[], opts: { timeout?: num
   });
 }
 
+/**
+ * `adb -s <serial> emu <cmd…>` — the emulator console (geo, network, gsm, sms,
+ * finger, avd snapshot, power…). adb authenticates with the console token for
+ * us. The console answers `OK` or `KO: <reason>`; this resolves with the
+ * response body (sans OK) and throws on KO / non-emulator serials.
+ */
+export async function adbEmu(serial: string, args: string[], opts: { timeout?: number } = {}): Promise<string> {
+  if (!serial.startsWith("emulator-")) {
+    throw new Error(`'${args[0]}' needs an emulator (adb emu console) — ${serial} is not one`);
+  }
+  const out = await adb(["-s", serial, "emu", ...args], { timeout: opts.timeout ?? 20_000 });
+  return parseEmuConsoleReply(out, args);
+}
+
+/** Exported for tests. */
+export function parseEmuConsoleReply(out: string, args: string[]): string {
+  const lines = out
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const ko = lines.find((l) => /^KO\b/.test(l));
+  if (ko) throw new Error(`emulator console rejected '${args.join(" ")}': ${ko.replace(/^KO:?\s*/, "") || "unknown error"}`);
+  return lines.filter((l) => l !== "OK").join("\n");
+}
+
+/** `adb -s <serial> install -r [-g] <apk>` — resolves with adb's output. */
+export async function adbInstall(serial: string, apk: string, opts: { grant?: boolean; reinstall?: boolean } = {}): Promise<string> {
+  const args = ["-s", serial, "install"];
+  if (opts.reinstall !== false) args.push("-r");
+  if (opts.grant !== false) args.push("-g");
+  args.push(apk);
+  const out = await adb(args, { timeout: 300_000 });
+  if (/Failure/i.test(out)) throw new Error(out.trim());
+  return out.trim();
+}
+
+export function adbPush(serial: string, local: string, remote: string): Promise<string> {
+  return adb(["-s", serial, "push", local, remote], { timeout: 300_000 }).then((o) => o.trim());
+}
+
+export function adbPull(serial: string, remote: string, local: string): Promise<string> {
+  return adb(["-s", serial, "pull", remote, local], { timeout: 300_000 }).then((o) => o.trim());
+}
+
 // ── Device discovery ───────────────────────────────────────────────────────
 
 export interface AdbDevice {

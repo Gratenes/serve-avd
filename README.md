@@ -22,10 +22,13 @@ It is a faithful Android port of [serve-sim](https://github.com/EvanBacon/serve-
 - Android navigation from the browser: Back, Home, Recents, power, volume, rotate, theme toggle, screenshot.
 - Keyboard forwarding — type into the emulator directly, Escape acts as Back, ⌘⇧H goes Home.
 - logcat is forwarded to the browser (and mirrored into the browser console for browser-use MCP tools to read).
-- Recent actions are available in the browser Tools panel and `serve-avd event-log`.
-- UI hierarchy dumps for agents: `serve-avd ax` (uiautomator → JSON).
+- Recent actions are available in the browser Tools panel and `serve-avd event-log` — and export as a replayable script (`serve-avd replay`).
+- UI hierarchy dumps for agents: `serve-avd ax` (uiautomator → JSON), plus semantic targeting on top: `serve-avd find "Sign in"`, `serve-avd tap --text "Sign in"`, `serve-avd wait "Welcome"`.
+- **Built-in MCP server** (`serve-avd mcp`) — one config line hands the emulator to Claude Desktop, Cursor, Codex or any MCP client as tools.
+- **Typed client SDK** (`serve-avd/client`) for Playwright-style scripts and agent frameworks — no shelling out.
+- Emulator controls from the CLI, Tools panel, SDK and MCP: location (+ routes), network conditions, battery, fingerprint, calls & SMS, font scale / density / locale / TalkBack, snapshots (save/load to reset state), app install/launch/stop/clear/open-URL, and `shell`/`push`/`pull` passthrough.
 - Multiple emulators at once — boot and attach AVDs straight from the Devices panel.
-- Works headless over the same HTTP API when no browser is attached.
+- Every command works headless (straight over adb) when no server is running, and through the server (shared event log, live viewers) when one is.
 
 ## Why?
 
@@ -45,9 +48,19 @@ The H.264 stream needs `screenrecord --output-format=h264` (present on every emu
 serve-avd [device...]                 Start preview server (default: localhost:3200)
                                       device = adb serial or AVD name (boots it if needed)
 serve-avd --no-preview [device...]    Stream in foreground without a preview server
+serve-avd mcp [--serve] [-d serial]   MCP server over stdio (see Connectors)
+
 serve-avd gesture '<json>' [-d serial]
                                       Send a touch gesture
 serve-avd tap <x> <y> [-d serial]     Tap at normalized 0..1 coords
+serve-avd tap --text "Sign in"        …or the first UI element matching
+          --id submit | --desc Search   text / resource id / description
+          [--index n] [--exact] [--long [ms]]
+serve-avd find "<text>" [--id|--desc|--class] [--json]
+                                      Find UI elements: bounds, centers, normalized coords
+serve-avd wait "<text>" [--timeout 10s] [--gone]
+                                      Poll until an element appears/disappears (exit 2 on timeout)
+serve-avd swipe <x1> <y1> <x2> <y2> [--duration 300ms]
 serve-avd button [name] [-d serial]   Send a button press (default: home)
                                       home|back|app-switch|power|lock|wake|
                                       volume-up|volume-down|mute|menu|camera|
@@ -63,10 +76,35 @@ serve-avd debug <option> <on|off> [-d serial]
                                        show-taps|pointer-location|slow-animations)
 serve-avd memory-warning [-d serial]  Ask the foreground app to trim memory
 serve-avd event-log [-d serial]       Show recent emulator events
+serve-avd event-log --export <file>   …as a replayable JSON script
+serve-avd replay <file> [--speed 2] [--no-wait] [--coords] [--continue]
+                                      Replay a script (exported or hand-written)
 serve-avd screenshot [path] [-d serial]
                                       Save a screenshot (PNG/JPEG)
 serve-avd ax [-d serial]              Dump the UI hierarchy as JSON (uiautomator)
 serve-avd foreground [-d serial]      Print the foreground app
+
+Emulator controls:
+serve-avd geo <lat> <lon> [alt]       Set the GPS fix
+serve-avd geo --route <file|"lat,lon lat,lon …"> [--interval 1s] [--steps n] [--loop]
+                                      Follow a route of fixes
+serve-avd network [speed <gsm|edge|lte|full|up:down>] [delay <gprs|edge|umts|none|min:max>]
+                  [airplane on|off] [wifi on|off] [data on|off]   (no args: status)
+serve-avd battery [<0-100> | unplug | ac | usb | wireless | reset]
+serve-avd fingerprint [id] [--remove] Touch the fingerprint sensor
+serve-avd call <number> | call accept|end|hold <number>
+serve-avd sms <number> <text…>        Deliver an incoming SMS
+serve-avd a11y font-scale <n> | density <dpi|reset> | locale <tag> [--app pkg|--system] | talkback on|off
+serve-avd snapshot save|load|delete <name> | snapshot list
+
+Apps:
+serve-avd install <apk> [--launch]    adb install -r -g
+serve-avd launch <package>            Launch by package (or package/.Activity)
+serve-avd stop | clear-data | uninstall <package>
+serve-avd open <url> [--package pkg]  Open a URL / deep link
+serve-avd apps [--all]                List installed packages
+serve-avd shell [cmd…] | push <local> <remote> | pull <remote> [local]
+                                      adb passthrough against the resolved device
 
 Options:
   -p, --port <port>   Starting port (preview default: 3200; --no-preview default: 3100)
@@ -117,9 +155,66 @@ serve-avd screenshot ./now.png
 serve-avd ax | jq '.root.children[0]'
 serve-avd foreground
 serve-avd event-log --json
+
+# Semantic targeting — no coordinate guessing
+serve-avd find "Sign in"                        # matches text *and* content-description
+serve-avd tap --text "Sign in"                  # tap the first match (or --id / --desc / --index)
+serve-avd wait "Welcome" --timeout 15s          # poll the UI until it appears (exit 2 on timeout)
+serve-avd wait --id progress --gone             # …or until it disappears
+serve-avd tap --text "Delete" --long            # long-press
+
+# Emulator controls
+serve-avd geo 37.7749 -122.4194                 # GPS fix
+serve-avd geo --route route.json --interval 2s --steps 10   # drive along a route
+serve-avd network speed lte delay edge          # link conditions (emulator console)
+serve-avd network airplane on                   # airplane / wifi / data toggles
+serve-avd battery 15 && serve-avd battery unplug
+serve-avd fingerprint                           # unblock a biometric prompt (enrol one first)
+serve-avd sms 5551234 "Your code is 424242"
+serve-avd call 5551234 && serve-avd call end 5551234
+serve-avd a11y font-scale 1.3
+serve-avd snapshot save clean                   # …run something risky…
+serve-avd snapshot load clean                   # reset to the saved state
+
+# Apps
+serve-avd install ./app-debug.apk --launch
+serve-avd open "myapp://orders/42"
+serve-avd launch com.example.app
+serve-avd clear-data com.example.app
+
+# Record what a human (or agent) did in the preview, then reproduce it
+serve-avd event-log --export flow.json
+serve-avd replay flow.json --speed 2
 ```
 
 Multiple devices are supported — pass several serials or AVD names, or leave it empty to attach to every online device.
+
+Every subcommand goes through a running serve-avd server when there is one for the device (so viewers, the Tools pane and the event log all see it) and falls back to driving adb directly when there isn't — `serve-avd tap --text "OK"` works with nothing else running.
+
+### Semantic targeting
+
+`find`, `tap --text/--id/--desc/--class` and `wait` are a thin layer over the uiautomator dump. Matching is a case-insensitive substring by default (`--exact` for exact); `--text` also matches content-descriptions so icon buttons resolve too; `--id` accepts either `pkg:id/name` or just `name`; `--index n` picks the nth match. `find` prints normalized centers (what `tap x y` and the SDK take) and pixel bounds:
+
+```
+[0] "Sign in" Button com.app:id/submit  @ (0.500, 0.925)  px 500,1850  bounds [100,1800][900,1900]  clickable
+```
+
+`wait` polls (default every 500 ms, 10 s budget) and exits 2 on timeout, so `serve-avd tap --text Next && serve-avd wait "Done"` is a one-line assertion. A uiautomator dump takes 1–3 s on a healthy emulator; screens that never go idle (spinners) can take longer, and a dump is capped at 20 s.
+
+### Replay
+
+`event-log --export` distils the event log — taps (with the text/id target when there was one), drags, typing, keys, buttons, rotations, and every emulator control — into a JSON script with relative timing:
+
+```json
+{ "version": 1, "device": "emulator-5554", "steps": [
+  { "t": 0,    "action": "launch", "package": "com.example.app" },
+  { "t": 3089, "action": "wait",   "text": "Sign in", "timeoutMs": 8000 },
+  { "t": 5256, "action": "tap",    "x": 0.5, "y": 0.925, "target": { "text": "Sign in" } },
+  { "t": 7751, "action": "text",   "text": "hello" }
+]}
+```
+
+`replay` runs it back through the same actions. Taps prefer the recorded target (survives layout shifts) unless you pass `--coords`; `--speed 2` halves the pauses, `--no-wait` drops them, `--continue` keeps going past failures. Scripts are plain JSON — hand-write or generate them.
 
 ### Camera
 
@@ -150,7 +245,39 @@ GET  /helper/<serial>/screenshot.png       one-shot screenshot
 GET  /helper/<serial>/logs                 SSE of logcat lines
 GET  /helper/<serial>/ax                   UI hierarchy JSON
 GET  /helper/<serial>/foreground           { packageName, activity, pid }
+POST /helper/<serial>/action               { "action": "...", ...params } → { ok, result }
 WS   /helper/<serial>/ws                   binary input protocol
+```
+
+`POST …/action` is the RPC behind every subcommand, the Tools pane, the SDK and the MCP tools. Params can be spread beside `action` or nested under `params`; errors come back as `{ ok: false, error: bad_request | not_found | unsupported | failed, message }` with a matching 4xx/5xx.
+
+| action | params | notes |
+|---|---|---|
+| `tap` | `x, y` **or** `text \| id \| desc \| class [, exact, index]`, `durationMs` | long-press with `durationMs` |
+| `swipe` | `x1, y1, x2, y2, durationMs` | |
+| `text` | `text` | ASCII; `\n`/`\t` → Enter/Tab |
+| `key` | `code` (browser `KeyboardEvent.code`) or `keycode`, `longPress` | |
+| `button` | `button` | `home`, `back`, `app-switch`, `power`, `volume-up`, … |
+| `rotate` | `orientation` | resolves once the device has rotated; fails if refused |
+| `debug` / `theme` / `scroll` / `memory-warning` | as the WS messages | |
+| `find` | `text \| id \| desc \| class, exact, index` | `{ matches: [{ node, center, normalized, bounds }], total, screen }` |
+| `wait` | same + `timeoutMs, intervalMs, gone` | `{ ok, match, elapsedMs, attempts }` |
+| `geo` | `lat, lon, alt` | emulator only |
+| `network` | `speed, delay, airplane, wifi, data` | none → status |
+| `battery` | `level, plugged (ac\|usb\|wireless\|none), reset` | returns current state |
+| `fingerprint` | `id, remove` | emulator only |
+| `call` | `number, op (call\|accept\|end\|hold)` | emulator only |
+| `sms` | `number, text` | emulator only |
+| `font-scale` / `density` / `locale` / `talkback` | `scale` / `dpi` / `locale, package, system` / `enabled` | |
+| `install` / `launch` / `stop` / `clear-data` / `uninstall` | `path` / `package` | `install` reads the APK from the server host |
+| `open` | `url, package` | VIEW intent |
+| `apps` | `all` | `{ packages }` |
+| `snapshot` | `op (save\|load\|delete\|list), name` | emulator only; `load` waits for adb to come back |
+| `shell` | `cmd` | `{ code, output }` |
+
+```sh
+curl -X POST localhost:3200/helper/emulator-5554/action \
+  -H 'content-type: application/json' -d '{"action":"tap","text":"Sign in"}'
 ```
 
 The `/stream.avcc` wire format matches serve-sim byte-for-byte: each chunk is `[len:u32-be][tag:u8][payload]` where `len` covers the tag + payload. Tags: `0x01` avcC decoder config, `0x02` keyframe, `0x03` delta frame, `0x04` seed image (painted before the first keyframe decodes). The decoder config and the current GOP are replayed to late joiners, so viewers paint instantly even when the screen is static.
@@ -175,6 +302,55 @@ The input WebSocket accepts binary `[tag][JSON]` frames (all coordinates normali
 The server pushes `0x82` + JSON screen config whenever dimensions or orientation change, and `0x83` + `{"kind","ok","message"}` for one-off notices (e.g. a rotation the device refused).
 
 ## Connectors
+
+### MCP (Claude Desktop, Claude Code, Cursor, Codex, …)
+
+`serve-avd mcp` is a Model Context Protocol server over stdio. It exposes the emulator as tools — `screenshot`, `ui_tree`, `find`, `wait_for`, `tap`, `swipe`, `type_text`, `press_button`, `press_key`, `foreground`, `event_log`, `open_url`, `launch_app`, `install_apk`, `list_apps`, `rotate`, `set_location`, `snapshot`, `list_devices`, and a generic `device_action` for everything else (network, battery, fingerprint, call, sms, locale, …). No extra dependencies; nothing else needs to be running (it drives adb directly, or a running serve-avd when there is one).
+
+```json
+{
+  "mcpServers": {
+    "android": {
+      "command": "npx",
+      "args": ["-y", "serve-avd", "mcp", "--serve"]
+    }
+  }
+}
+```
+
+That's the whole config for Claude Desktop (`claude_desktop_config.json`), Cursor (`.cursor/mcp.json`) and Codex; for Claude Code: `claude mcp add android -- npx -y serve-avd mcp --serve`.
+
+- `--serve` also hosts the preview UI in the same process (default port 3200), so a human can watch the agent work at `http://localhost:3200`. Omit it to run headless.
+- `-d <serial|AVD>` pins every tool call to one device; otherwise tools take an optional `device` and default to the only/first one.
+- `screenshot` returns a JPEG (~250 KB on a 1344×2992 display) plus the screen size; `ui_tree` returns a compact list of labelled/interactive nodes with normalized centers — cheaper and exact, so agents can `find` → `tap` by text without vision at all.
+- Everything an agent does lands in the event log (`serve-avd event-log`, the Tools pane) and can be exported and replayed.
+
+### Client SDK (`serve-avd/client`)
+
+A typed, dependency-free client for a running server — plain `fetch`, so it works from Node 18+, Bun, Deno and browsers:
+
+```ts
+import { connect } from "serve-avd/client";
+
+const emu = await connect("http://localhost:3200");   // or your mounted base, e.g. http://localhost:8081/.emu
+const dev = emu.device();                             // first attached device (or emu.device("Pixel_9_Pro_XL"))
+
+await dev.launch("com.example.app");
+await dev.waitFor({ text: "Sign in" }, { timeoutMs: 15_000 });
+await dev.tap({ id: "email" });
+await dev.type("me@example.com\n");
+await dev.tap({ text: "Sign in" });
+await dev.waitFor({ text: "Welcome" });
+
+const { data, contentType } = await dev.screenshot(); // Uint8Array
+const nodes = await dev.find({ class: "Button" });     // bounds + normalized centers
+await dev.swipe({ x: 0.5, y: 0.8 }, { x: 0.5, y: 0.3 });
+await dev.geo(48.8566, 2.3522);
+await dev.snapshot.save("logged-in");
+await dev.action("network", { speed: "edge" });        // any action by name
+```
+
+`Device` mirrors the action table above (`tap`, `longPress`, `swipe`, `scroll`, `type`, `key`, `button`/`back`/`home`, `rotate`, `find`/`findFirst`/`exists`/`waitFor`, `ax`, `foreground`, `config`, `screenshot`, `eventLog`, `geo`/`followRoute`, `network`, `battery`, `fingerprint`, `call`, `sms`, `fontScale`, `density`, `locale`, `talkback`, `snapshot.*`, `install`, `launch`, `stop`, `clearData`, `uninstall`, `open`, `apps`, `shell`). Failures throw `ServeAvdError` with a `code` (`bad_request | not_found | unsupported | failed | http | network`); `waitFor` throws on timeout. `emu.attach("Pixel_9_Pro_XL")` boots/attaches devices; `emu.grid()` and `emu.eventLog()` mirror the Devices pane and event log.
 
 ### Claude Code Desktop
 
@@ -274,14 +450,17 @@ No native code, no device daemons: the npm package is plain Node + `adb`.
 - `type` supports ASCII only (Android's `input text` limitation) — matching serve-sim's "US keyboard only".
 - Apps that lock their orientation (launchers do) won't visibly rotate, exactly like hardware. The rotation is confirmed against the device, so the preview stays put and says so instead of pretending.
 - Pinch requires a rootable (non-Play) emulator image.
-- Physical devices work for everything except AVD-specific features (boot-by-name, emulator camera flags); enable USB debugging and expect `screenrecord` limits to vary by OEM.
+- Physical devices work for everything except AVD-specific features (boot-by-name, emulator camera flags, and the emulator-console actions: `geo`, `network speed/delay`, `fingerprint`, `call`, `sms`, `snapshot`); enable USB debugging and expect `screenrecord` limits to vary by OEM.
+- `fingerprint` needs a fingerprint enrolled in Settings first; `a11y talkback` needs an image with TalkBack installed (Google APIs / Play); `a11y locale` sets a per-app locale (Android 13+) unless `--system`, which needs a rooted (non-Play) image and otherwise applies on the next boot.
+- `find`/`wait`/`tap --text` depend on `uiautomator dump`, which is unavailable on secure screens (lock screen, payment sheets) and slow on screens that never go idle.
+- The HTTP action endpoint (and therefore the SDK/MCP) can run `shell` and install APKs — it is meant for `localhost`. Put a proxy with auth in front before binding to `0.0.0.0` or tunnelling.
 
 ## Development
 
 ```sh
 npm install
 npm run build       # bundle CLI + middleware + browser client into dist/
-npm test            # unit tests (H.264 parser, XML/rotation/keymap parsers)
+npm test            # unit tests (H.264 parser, XML/rotation/keymap parsers, find/wait, replay, MCP handler)
 npm run typecheck
 ```
 

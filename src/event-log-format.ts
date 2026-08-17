@@ -1,4 +1,5 @@
 import type { EventLogEntry } from "./event-log";
+import { describeQuery, type AxQuery } from "./ax";
 
 export function formatEventLogLine(
   entry: EventLogEntry,
@@ -15,8 +16,13 @@ export function formatEventLogLine(
 
 export function humanEventLogSummary(entry: EventLogEntry): string {
   if (entry.kind === "tap") {
+    const verb = typeof entry.details?.durationMs === "number" && entry.details.durationMs > 0 ? "Long-press" : "Tap";
+    const target = entry.details?.target;
+    if (target && typeof target === "object" && !Array.isArray(target)) {
+      return `${verb} ${describeQuery(target as AxQuery)}`;
+    }
     const point = pointFromDetails(entry.details, "current") ?? pointFromDetails(entry.details, "start");
-    return point ? `Tap at ${formatNormalizedPoint(point)}` : "Tap";
+    return point ? `${verb} at ${formatNormalizedPoint(point)}` : verb;
   }
   if (entry.kind === "drag") {
     const start = pointFromDetails(entry.details, "start");

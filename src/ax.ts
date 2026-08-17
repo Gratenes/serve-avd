@@ -39,17 +39,212 @@ export interface AxDump {
 }
 
 const DUMP_PATH = "/sdcard/.serve-avd-ui.xml";
+/**
+ * uiautomator waits for the UI to go idle before dumping; a screen that never
+ * settles (spinners, live animations) can hold it for a long time. Cap it
+ * device-side (toybox `timeout`, present on modern images) so callers fail
+ * fast rather than acting on a stale screen after the fact.
+ */
+const DUMP_TIMEOUT_S = 20;
 
 /** Dump the current UI hierarchy as JSON. Throws when uiautomator fails (e.g. secure screens). */
 export async function dumpUiHierarchy(shell: AdbShell): Promise<AxDump> {
   const result = await shell.runWithCode(
-    `uiautomator dump ${DUMP_PATH} >/dev/null 2>&1 && cat ${DUMP_PATH} && rm -f ${DUMP_PATH}`,
+    `if command -v timeout >/dev/null 2>&1; then timeout ${DUMP_TIMEOUT_S} uiautomator dump ${DUMP_PATH}; else uiautomator dump ${DUMP_PATH}; fi >/dev/null 2>&1 && cat ${DUMP_PATH} && rm -f ${DUMP_PATH}`,
   );
   const xmlStart = result.out.indexOf("<?xml");
   if (result.code !== 0 || xmlStart === -1) {
+    if (result.code === 124) throw new Error(`uiautomator dump timed out after ${DUMP_TIMEOUT_S}s (the UI never went idle)`);
     throw new Error(result.out.trim() || "uiautomator dump produced no XML");
   }
   return parseUiAutomatorXml(result.out.slice(xmlStart));
+}
+
+// ── Semantic targeting ─────────────────────────────────────────────────────
+
+/**
+ * A node query. Every given field must match; `text`, `desc` and `id` are
+ * case-insensitive substring matches unless `exact` is set (`id` also matches
+ * when the query is just the id's suffix after `:id/`). `text` additionally
+ * matches against `contentDesc`, so "Sign in" finds an icon button whose only
+ * label is its content description.
+ */
+export interface AxQuery {
+  text?: string;
+  id?: string;
+  desc?: string;
+  class?: string;
+  exact?: boolean;
+  /** Only nodes flagged clickable (walks up to the nearest clickable ancestor otherwise). */
+  clickable?: boolean;
+  /** Pick the nth match (0-based). Default 0. */
+  index?: number;
+}
+
+/** A matched node with its center in display pixels and normalized 0..1 coords. */
+export interface AxMatch {
+  node: AxNode;
+  /** Path of child indices from the root. */
+  path: number[];
+  depth: number;
+  center: { x: number; y: number };
+  normalized: { x: number; y: number };
+  bounds: AxBounds;
+}
+
+export interface FindResult {
+  matches: AxMatch[];
+  screen: { width: number; height: number };
+  total: number;
+}
+
+export function isEmptyQuery(query: AxQuery): boolean {
+  return query.text == null && query.id == null && query.desc == null && query.class == null;
+}
+
+export function describeQuery(query: AxQuery): string {
+  const parts: string[] = [];
+  if (query.text != null) parts.push(`text ${JSON.stringify(query.text)}`);
+  if (query.id != null) parts.push(`id ${query.id}`);
+  if (query.desc != null) parts.push(`desc ${JSON.stringify(query.desc)}`);
+  if (query.class != null) parts.push(`class ${query.class}`);
+  const label = parts.join(", ") || "any node";
+  return query.index ? `${label} [${query.index}]` : label;
+}
+
+/** Depth-first flatten with each node's path from the root. */
+export function flattenAx(root: AxNode | null): Array<{ node: AxNode; path: number[] }> {
+  const out: Array<{ node: AxNode; path: number[] }> = [];
+  const walk = (node: AxNode, path: number[]) => {
+    out.push({ node, path });
+    node.children?.forEach((child, i) => walk(child, [...path, i]));
+  };
+  if (root) walk(root, []);
+  return out;
+}
+
+function matchesString(actual: string | undefined, wanted: string, exact: boolean): boolean {
+  if (actual == null) return false;
+  if (exact) return actual === wanted;
+  return actual.toLowerCase().includes(wanted.toLowerCase());
+}
+
+/** Does `node` satisfy `query` (ignoring `index`)? */
+export function nodeMatches(node: AxNode, query: AxQuery): boolean {
+  const exact = query.exact === true;
+  if (query.text != null && !matchesString(node.text, query.text, exact) && !matchesString(node.contentDesc, query.text, exact)) {
+    return false;
+  }
+  if (query.desc != null && !matchesString(node.contentDesc, query.desc, exact)) return false;
+  if (query.id != null) {
+    const id = node.resourceId;
+    if (id == null) return false;
+    const suffix = id.includes(":id/") ? id.slice(id.indexOf(":id/") + 4) : id;
+    const ok = exact
+      ? id === query.id || suffix === query.id
+      : id.toLowerCase().includes(query.id.toLowerCase());
+    if (!ok) return false;
+  }
+  if (query.class != null) {
+    const cls = node.class;
+    if (cls == null) return false;
+    const ok = exact ? cls === query.class : cls.toLowerCase().includes(query.class.toLowerCase());
+    if (!ok) return false;
+  }
+  if (query.clickable && !node.clickable) return false;
+  return true;
+}
+
+/** Screen size for normalization: the root node's bounds, else the given fallback. */
+export function axScreenSize(dump: AxDump, fallback?: { width: number; height: number }): { width: number; height: number } {
+  const b = dump.root?.bounds;
+  if (b && b.right - b.left > 0 && b.bottom - b.top > 0) return { width: b.right - b.left, height: b.bottom - b.top };
+  return fallback ?? { width: 0, height: 0 };
+}
+
+/**
+ * Find nodes matching `query`, ordered document-first (which is roughly
+ * top-to-bottom, left-to-right on screen). Nodes without bounds are skipped.
+ */
+export function findInAx(dump: AxDump, query: AxQuery, screen?: { width: number; height: number }): FindResult {
+  const size = axScreenSize(dump, screen);
+  const matches: AxMatch[] = [];
+  for (const { node, path } of flattenAx(dump.root)) {
+    if (!nodeMatches(node, query)) continue;
+    const bounds = node.bounds;
+    if (!bounds) continue;
+    const cx = (bounds.left + bounds.right) / 2;
+    const cy = (bounds.top + bounds.bottom) / 2;
+    matches.push({
+      node: { ...node, children: undefined },
+      path,
+      depth: path.length,
+      bounds,
+      center: { x: Math.round(cx), y: Math.round(cy) },
+      normalized: {
+        x: size.width > 0 ? clamp01(cx / size.width) : 0,
+        y: size.height > 0 ? clamp01(cy / size.height) : 0,
+      },
+    });
+  }
+  return { matches, screen: size, total: matches.length };
+}
+
+/** The single match `query.index` points at (default first), or null. */
+export function pickMatch(result: FindResult, query: AxQuery): AxMatch | null {
+  return result.matches[query.index ?? 0] ?? null;
+}
+
+export interface WaitOptions {
+  /** Total budget in ms. Default 10s. */
+  timeoutMs?: number;
+  /** Poll interval in ms. Default 500. */
+  intervalMs?: number;
+  /** Wait for the node to *disappear* instead. */
+  gone?: boolean;
+}
+
+export interface WaitResult {
+  ok: boolean;
+  /** The match when waiting for presence (null when timed out or waiting for gone). */
+  match: AxMatch | null;
+  elapsedMs: number;
+  attempts: number;
+}
+
+/**
+ * Poll `dump()` until `query` matches (or stops matching with `gone`), or the
+ * budget runs out. Dump failures (secure screens, transient uiautomator
+ * errors) count as "no match" and are retried.
+ */
+export async function waitForAx(
+  dump: () => Promise<AxDump>,
+  query: AxQuery,
+  options: WaitOptions = {},
+  screen?: { width: number; height: number },
+): Promise<WaitResult> {
+  const timeoutMs = options.timeoutMs ?? 10_000;
+  const intervalMs = options.intervalMs ?? 500;
+  const started = Date.now();
+  let attempts = 0;
+  for (;;) {
+    attempts++;
+    let match: AxMatch | null = null;
+    try {
+      match = pickMatch(findInAx(await dump(), query, screen), query);
+    } catch {
+      match = null;
+    }
+    const satisfied = options.gone ? match == null : match != null;
+    const elapsedMs = Date.now() - started;
+    if (satisfied) return { ok: true, match: options.gone ? null : match, elapsedMs, attempts };
+    if (elapsedMs >= timeoutMs) return { ok: false, match: null, elapsedMs, attempts };
+    await new Promise((r) => setTimeout(r, Math.min(intervalMs, Math.max(0, timeoutMs - elapsedMs))));
+  }
+}
+
+function clamp01(value: number): number {
+  return Math.min(1, Math.max(0, value));
 }
 
 // ── XML parsing (uiautomator's restricted dialect) ─────────────────────────

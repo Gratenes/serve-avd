@@ -195,6 +195,25 @@ export class InputInjector {
     }
   }
 
+  /** Atomic tap at display pixels (`input tap`). */
+  async tap(px: number, py: number): Promise<void> {
+    await this.shell.run(`input tap ${Math.round(px)} ${Math.round(py)}`);
+  }
+
+  /** Long-press: a zero-distance swipe held for `durationMs`. */
+  async longPress(px: number, py: number, durationMs: number): Promise<void> {
+    const x = Math.round(px);
+    const y = Math.round(py);
+    await this.shell.run(`input swipe ${x} ${y} ${x} ${y} ${Math.max(1, Math.round(durationMs))}`);
+  }
+
+  /** Swipe between display pixels over `durationMs`. */
+  async swipe(x1: number, y1: number, x2: number, y2: number, durationMs = 300): Promise<void> {
+    await this.shell.run(
+      `input swipe ${Math.round(x1)} ${Math.round(y1)} ${Math.round(x2)} ${Math.round(y2)} ${Math.max(1, Math.round(durationMs))}`,
+    );
+  }
+
   /** Mouse-wheel scroll: a short inverted swipe around the pointer. */
   async scroll(dx: number, dy: number, width: number, height: number, atX = 0.5, atY = 0.5): Promise<void> {
     const cx = Math.round(clamp01(atX) * width);
