@@ -52,6 +52,30 @@ await esbuild.build({
   },
 });
 
+// Client SDK (`serve-avd/client`) — ESM + CJS, runtime-neutral (plain fetch).
+await esbuild.build({
+  entryPoints: ["src/sdk.ts"],
+  outfile: "dist/sdk.js",
+  platform: "neutral",
+  target: ["es2022"],
+  format: "esm",
+  bundle: true,
+  sourcemap: false,
+  logLevel: "info",
+  define,
+});
+await esbuild.build({
+  entryPoints: ["src/sdk.ts"],
+  outfile: "dist/sdk.cjs",
+  platform: "node",
+  target: "node18",
+  format: "cjs",
+  bundle: true,
+  sourcemap: false,
+  logLevel: "info",
+  define,
+});
+
 // Browser preview client.
 await esbuild.build({
   entryPoints: ["src/client/client.ts"],

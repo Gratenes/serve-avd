@@ -35,6 +35,7 @@ interface DeviceEntry {
   screenshotEndpoint: string;
   axEndpoint: string;
   foregroundEndpoint: string;
+  actionEndpoint: string;
 }
 
 interface ApiState {
@@ -864,6 +865,8 @@ class Panes {
     }
     wrap.append(el("h3", { text: "Render debugging" }), flags);
 
+    this.renderEmulatorControls(wrap, () => target);
+
     const log = el("div", { class: "event-log" });
     wrap.append(el("h3", { text: "Recent actions" }), log);
     const push = (entry: EventLogEntry) => {
@@ -883,6 +886,248 @@ class Panes {
     };
 
     this.body.replaceChildren(wrap);
+  }
+
+  /**
+   * Emulator controls: every row posts to the device's `/action` endpoint —
+   * the same RPC the CLI, MCP tools and SDK use — so the Recent-actions log
+   * below reflects it and scripts can reproduce it.
+   */
+  private renderEmulatorControls(wrap: HTMLElement, target: () => DeviceView | null): void {
+    const status = el("div", { class: "tool-status" });
+    let statusTimer: number | null = null;
+    const flash = (message: string, error = false) => {
+      status.textContent = message;
+      status.classList.toggle("error", error);
+      if (statusTimer) window.clearTimeout(statusTimer);
+      statusTimer = window.setTimeout(() => {
+        status.textContent = "";
+      }, 4_000);
+    };
+    const run = async (action: string, params: Record<string, unknown>, okMessage?: string): Promise<unknown> => {
+      const view = target();
+      if (!view) {
+        flash("No device attached", true);
+        return null;
+      }
+      try {
+        const res = await fetch(view.entry.actionEndpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action, params }),
+        });
+        const body = (await res.json()) as { ok: boolean; result?: unknown; message?: string };
+        if (!res.ok || !body.ok) {
+          flash(body.message ?? `${action} failed`, true);
+          return null;
+        }
+        if (okMessage) flash(okMessage);
+        return body.result;
+      } catch (err) {
+        flash(err instanceof Error ? err.message : String(err), true);
+        return null;
+      }
+    };
+
+    const field = (placeholder: string, opts: { type?: string; value?: string; width?: number; min?: string; max?: string; step?: string } = {}) => {
+      const input = el("input", {
+        class: "input tool-input",
+        placeholder,
+        type: opts.type ?? "text",
+        value: opts.value,
+        min: opts.min,
+        max: opts.max,
+        step: opts.step,
+        style: opts.width ? `width:${opts.width}px` : undefined,
+      }) as HTMLInputElement;
+      return input;
+    };
+    const row = (...children: Array<Node | string | null | undefined>) => el("div", { class: "tool-form-row" }, ...children);
+    const small = (label: string, title: string, fn: () => void) => button(label, title, fn, "small");
+    const select = (options: Array<[string, string]>, value?: string) => {
+      const s = el("select", { class: "select tool-input" }) as HTMLSelectElement;
+      for (const [v, label] of options) s.append(el("option", { value: v, text: label }));
+      if (value != null) s.value = value;
+      return s;
+    };
+    const toggle = (label: string, onChange: (checked: boolean) => void) => {
+      const box = el("input", { type: "checkbox" }) as HTMLInputElement;
+      box.addEventListener("change", () => onChange(box.checked));
+      return { box, label: el("label", { class: "flag" }, box, ` ${label}`) };
+    };
+    const section = (title: string, ...rows: HTMLElement[]) => {
+      wrap.append(el("h3", { text: title }), el("div", { class: "tool-form" }, ...rows));
+    };
+    const onEnter = (input: HTMLInputElement, fn: () => void) =>
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") fn();
+      });
+
+    // Location
+    const lat = field("Latitude", { type: "number", step: "any", value: "37.4220" });
+    const lon = field("Longitude", { type: "number", step: "any", value: "-122.0841" });
+    const setGeo = () => void run("geo", { lat: Number(lat.value), lon: Number(lon.value) }, `Location ${lat.value}, ${lon.value}`);
+    onEnter(lat, setGeo);
+    onEnter(lon, setGeo);
+    section("Location", row(lat, lon, small("Set", "Send a GPS fix (adb emu geo fix)", setGeo)));
+
+    // Network
+    const speed = select(
+      [
+        ["", "speed…"],
+        ["full", "full"],
+        ["lte", "lte"],
+        ["hsdpa", "hsdpa"],
+        ["umts", "umts"],
+        ["edge", "edge"],
+        ["gprs", "gprs"],
+        ["gsm", "gsm"],
+      ],
+      "",
+    );
+    const delay = select(
+      [
+        ["", "delay…"],
+        ["none", "none"],
+        ["umts", "umts"],
+        ["edge", "edge"],
+        ["gprs", "gprs"],
+      ],
+      "",
+    );
+    speed.addEventListener("change", () => speed.value && void run("network", { speed: speed.value }, `Speed ${speed.value}`));
+    delay.addEventListener("change", () => delay.value && void run("network", { delay: delay.value }, `Delay ${delay.value}`));
+    const airplane = toggle("airplane", (on) => void run("network", { airplane: on }, `Airplane ${on ? "on" : "off"}`));
+    const wifi = toggle("wifi", (on) => void run("network", { wifi: on }, `Wi-Fi ${on ? "on" : "off"}`));
+    const data = toggle("mobile data", (on) => void run("network", { data: on }, `Mobile data ${on ? "on" : "off"}`));
+    section("Network", row(speed, delay), row(airplane.label, wifi.label, data.label));
+    void run("network", {}).then((r) => {
+      const s = r as { airplane?: boolean; wifi?: boolean; data?: boolean } | null;
+      if (!s) return;
+      airplane.box.checked = !!s.airplane;
+      wifi.box.checked = !!s.wifi;
+      data.box.checked = !!s.data;
+    });
+
+    // Battery
+    const level = field("Level %", { type: "number", min: "0", max: "100", width: 90 });
+    const setLevel = () => level.value !== "" && void run("battery", { level: Number(level.value) }, `Battery ${level.value}%`);
+    onEnter(level, setLevel);
+    section(
+      "Battery",
+      row(
+        level,
+        small("Set", "Fake the battery level", setLevel),
+        small("Unplug", "Unplug the charger", () => void run("battery", { plugged: "none" }, "Unplugged")),
+        small("AC", "Plug into AC", () => void run("battery", { plugged: "ac" }, "Charging (AC)")),
+        small("Reset", "Restore real battery reporting", () => void run("battery", { reset: true }, "Battery reset")),
+      ),
+    );
+
+    // Telephony + sensors
+    const number = field("Phone number", { value: "5551234567", width: 150 });
+    const smsText = field("SMS text");
+    section(
+      "Telephony & sensors",
+      row(
+        number,
+        small("Call", "Incoming call", () => void run("call", { number: number.value, op: "call" }, `Calling from ${number.value}`)),
+        small("End", "End the call", () => void run("call", { number: number.value, op: "end" }, "Call ended")),
+      ),
+      row(smsText, small("Send SMS", "Deliver an incoming SMS", () => void run("sms", { number: number.value, text: smsText.value }, "SMS delivered"))),
+      row(small("Fingerprint", "Touch the fingerprint sensor (finger 1)", () => void run("fingerprint", { id: 1 }, "Fingerprint touched"))),
+    );
+
+    // Apps
+    const url = field("https://… or myapp://…");
+    const openUrl = () => url.value && void run("open", { url: url.value }, `Opened ${url.value}`);
+    onEnter(url, openUrl);
+    const pkg = field("com.example.app");
+    section(
+      "Apps",
+      row(url, small("Open", "Open a URL / deep link", openUrl)),
+      row(
+        pkg,
+        small("Launch", "Launch the app", () => pkg.value && void run("launch", { package: pkg.value }, `Launched ${pkg.value}`)),
+        small("Stop", "Force-stop the app", () => pkg.value && void run("stop", { package: pkg.value }, `Stopped ${pkg.value}`)),
+        small("Clear", "Clear the app's data", () => pkg.value && void run("clear-data", { package: pkg.value }, `Cleared ${pkg.value}`)),
+      ),
+    );
+    void (async () => {
+      const view = target();
+      if (!view) return;
+      try {
+        const res = await fetch(view.entry.foregroundEndpoint);
+        if (res.ok) {
+          const fg = (await res.json()) as { packageName?: string };
+          if (fg.packageName && !pkg.value) pkg.value = fg.packageName;
+        }
+      } catch {}
+    })();
+
+    // Accessibility / display
+    const fontScale = select(
+      [
+        ["", "font scale…"],
+        ["0.85", "0.85×"],
+        ["1", "1.0×"],
+        ["1.15", "1.15×"],
+        ["1.3", "1.3×"],
+        ["1.5", "1.5×"],
+        ["2", "2.0×"],
+      ],
+      "",
+    );
+    fontScale.addEventListener("change", () => fontScale.value && void run("font-scale", { scale: Number(fontScale.value) }, `Font scale ${fontScale.value}×`));
+    const dpi = field("dpi", { type: "number", min: "72", max: "1200", width: 80 });
+    const setDpi = () => dpi.value && void run("density", { dpi: dpi.value }, `Density ${dpi.value}`);
+    onEnter(dpi, setDpi);
+    const talkback = toggle("TalkBack", (on) => void run("talkback", { enabled: on }, `TalkBack ${on ? "on" : "off"}`));
+    section(
+      "Accessibility",
+      row(fontScale, dpi, small("Set", "Override display density", setDpi), small("Reset", "Reset density", () => void run("density", { dpi: "reset" }, "Density reset"))),
+      row(talkback.label),
+    );
+
+    // Snapshots
+    const snapName = field("snapshot name", { value: "clean" });
+    const snapList = el("div", { class: "snap-list" });
+    const refreshSnapshots = async () => {
+      const r = (await run("snapshot", { op: "list" })) as { snapshots: Array<{ tag: string; size?: string; date?: string }> } | null;
+      snapList.replaceChildren();
+      if (!r) return;
+      if (r.snapshots.length === 0) {
+        snapList.append(el("span", { class: "muted", text: "No snapshots yet." }));
+        return;
+      }
+      for (const s of r.snapshots) {
+        snapList.append(
+          el(
+            "div",
+            { class: "snap-row" },
+            el("span", {}, el("strong", { text: s.tag }), s.size ? el("span", { class: "muted", text: `  ${s.size}` }) : null),
+            el(
+              "span",
+              { class: "snap-actions" },
+              small("Load", `Restore ${s.tag}`, () => void run("snapshot", { op: "load", name: s.tag }, `Loaded ${s.tag}`)),
+              small("Delete", `Delete ${s.tag}`, () => void run("snapshot", { op: "delete", name: s.tag }, `Deleted ${s.tag}`).then(refreshSnapshots)),
+            ),
+          ),
+        );
+      }
+    };
+    section(
+      "Snapshots",
+      row(
+        snapName,
+        small("Save", "Save the emulator state", () => snapName.value && void run("snapshot", { op: "save", name: snapName.value }, `Saved ${snapName.value}`).then(refreshSnapshots)),
+        small("Load", "Restore this snapshot", () => snapName.value && void run("snapshot", { op: "load", name: snapName.value }, `Loaded ${snapName.value}`)),
+      ),
+      snapList,
+    );
+    void refreshSnapshots();
+
+    wrap.append(status);
   }
 
   private renderLogs(): void {

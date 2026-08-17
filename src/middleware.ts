@@ -11,6 +11,8 @@
  *   {base}/helper/<serial>/…       stream.mjpeg | stream.avcc | config |
  *                                  health | ax | foreground | logs |
  *                                  screenshot.png
+ *   {base}/helper/<serial>/action  POST { action, ...params } → JSON result
+ *                                  (tap/find/wait/geo/network/… see actions.ts)
  *   {base}/helper/<serial>/ws      input WebSocket (via handleUpgrade)
  *
  * Everything is same-origin on one port, so embedding in an existing dev
@@ -37,6 +39,7 @@ import {
 export { closeAllDeviceSessions, closeDeviceSession };
 import { listDevices, listAvds, launchAvd, waitForNewEmulatorSerial, waitForBoot } from "./adb";
 import { listEventLogEvents, subscribeEventLog, recordEventLogEvent } from "./event-log";
+import { ActionError } from "./actions";
 import { createDebug } from "./debug";
 
 const debug = createDebug("middleware");
@@ -234,6 +237,7 @@ export function emuMiddleware(options: EmuMiddlewareOptions = {}): EmuMiddleware
       screenshotEndpoint: `${prefix}/screenshot.png`,
       axEndpoint: `${prefix}/ax`,
       foregroundEndpoint: `${prefix}/foreground`,
+      actionEndpoint: `${prefix}/action`,
     };
   };
 
@@ -427,6 +431,33 @@ export function emuMiddleware(options: EmuMiddlewareOptions = {}): EmuMiddleware
           case "/screenshot.png":
             await session.handleScreenshot(req, res);
             return;
+          case "/action": {
+            if (req.method !== "POST") {
+              sendJson(res, 405, { ok: false, error: "method_not_allowed", message: "POST { action, ...params }" });
+              return;
+            }
+            let body: { action?: string; params?: Record<string, unknown> } & Record<string, unknown>;
+            try {
+              body = JSON.parse((await readBody(req)).toString("utf8") || "{}");
+            } catch {
+              sendJson(res, 400, { ok: false, error: "bad_request", message: "invalid JSON body" });
+              return;
+            }
+            const name = typeof body.action === "string" ? body.action : "";
+            // Params may be nested under `params` or spread alongside `action`.
+            const { action: _a, params: nested, ...spread } = body;
+            const params = { ...spread, ...(nested && typeof nested === "object" ? nested : {}) };
+            try {
+              const result = await session.runAction(name, params);
+              sendJson(res, 200, { ok: true, action: name, result });
+            } catch (err) {
+              const e = err as ActionError;
+              const code = e instanceof ActionError ? e.code : "failed";
+              const status = code === "bad_request" ? 400 : code === "not_found" ? 404 : code === "unsupported" ? 501 : 500;
+              sendJson(res, status, { ok: false, action: name, error: code, message: e?.message ?? String(err) });
+            }
+            return;
+          }
           default:
             sendJson(res, 404, { error: "unknown helper endpoint" });
             return;

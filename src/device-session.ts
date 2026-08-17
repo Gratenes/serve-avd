@@ -17,6 +17,8 @@ import type { IncomingMessage, ServerResponse } from "http";
 import { spawn, type ChildProcess } from "child_process";
 import {
   AdbShell,
+  adb,
+  adbEmu,
   adbPath,
   deviceDisplayName,
   screenGeometry,
@@ -26,6 +28,7 @@ import { VideoCapture, StillCapture, type StillFrame } from "./capture";
 import { InputInjector, orientationNameForRotation } from "./input";
 import { wrapEnvelope, AVCC_TAG_SEED } from "./h264";
 import { dumpUiHierarchy } from "./ax";
+import { runAction, type ActionContext, type ActionParams } from "./actions";
 import { androidKeycodeForBrowserCode } from "./keymap";
 import {
   recordEventLogEvent,
@@ -74,6 +77,7 @@ type TouchGestureLog = {
   lastX: number;
   lastY: number;
   moveCount: number;
+  startedAt: number;
 };
 
 function touchGestureSummary(gesture: TouchGestureLog): string {
@@ -596,6 +600,7 @@ export class EmulatorSession {
         lastX: payload.x,
         lastY: payload.y,
         moveCount: 0,
+        startedAt: Date.now(),
       };
       return;
     }
@@ -664,8 +669,40 @@ export class EmulatorSession {
       start: { x: gesture.startX, y: gesture.startY },
       current: { x: gesture.lastX, y: gesture.lastY },
       moveCount: gesture.moveCount,
+      durationMs: Math.max(0, Date.now() - gesture.startedAt),
       ...(width > 0 && height > 0 ? { screen: { width, height } } : {}),
     };
+  }
+
+  // ── Actions (HTTP RPC) ───────────────────────────────────────────────────
+
+  private actionContext(): ActionContext {
+    return {
+      serial: this.serial,
+      shell: this.shell,
+      injector: this.injector,
+      displaySize: async () => this.displaySize(),
+      ax: () => dumpUiHierarchy(this.shell),
+      emu: (args, opts) => adbEmu(this.serial, args, opts),
+      adb: (args, opts) => adb(["-s", this.serial, ...args], opts),
+      record: (entry) => recordEventLogEvent({ device: this.serial, source: "api", ...entry }),
+      onDisplayReset: () => {
+        // A snapshot load swaps the whole screen (and possibly rotation) under
+        // the running capture; re-arm so viewers get a fresh keyframe.
+        void this.pollRotation();
+        this.video.restart();
+        void this.seedRotatedFrame();
+      },
+      onRotation: (rotation) => {
+        this.adoptRotation(rotation);
+        this.broadcastConfig();
+      },
+    };
+  }
+
+  /** Run a named device action (see `actions.ts`) against this session. */
+  runAction(name: string, params: ActionParams = {}): Promise<unknown> {
+    return runAction(this.actionContext(), name, params);
   }
 
   // ── Config push ──────────────────────────────────────────────────────────

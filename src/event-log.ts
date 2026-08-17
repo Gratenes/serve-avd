@@ -4,7 +4,7 @@
  * `/api/event-log/events`, and rendered by `serve-avd event-log`.
  */
 
-export type EventLogSource = "hid" | "cli" | "server" | "ui";
+export type EventLogSource = "hid" | "cli" | "server" | "ui" | "api";
 export type EventLogStatus = "ok" | "error";
 
 export type EventLogEntry = {
