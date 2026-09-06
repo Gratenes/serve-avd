@@ -279,7 +279,8 @@ body {
 }
 
 .screen-wrap {
-  width: 320px;
+  width: auto;
+  height: calc(100vh - 210px);
   max-width: 100%;
   background: #000;
   border-radius: 16px;
@@ -287,11 +288,13 @@ body {
   outline: none;
   position: relative;
   touch-action: none;
+  /* Fallback only — the client swaps in a fingertip circle (see touchCursorCss). */
   cursor: crosshair;
 }
 
 .device.landscape .screen-wrap {
-  width: 640px;
+  height: auto;
+  width: min(calc(100vw - 420px), 1200px);
 }
 
 .screen-wrap:focus-visible {
@@ -329,17 +332,6 @@ body {
 
 .device-notice.hidden {
   opacity: 0;
-}
-
-/* Fit mode: size screens to the viewport height. */
-body.fit .screen-wrap {
-  width: auto;
-  height: calc(100vh - 210px);
-}
-
-body.fit .device.landscape .screen-wrap {
-  height: auto;
-  width: min(calc(100vw - 420px), 1200px);
 }
 
 .device-controls {

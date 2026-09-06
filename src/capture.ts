@@ -30,6 +30,21 @@ const debug = createDebug("capture");
 const GOP_MAX_FRAMES = 900;
 const GOP_MAX_BYTES = 48 * 1024 * 1024;
 
+// Late joiners get the cached GOP replayed so they paint at once — but a
+// long one (a video has been playing) means decoding seconds of footage
+// before the view catches up, which reads as lag. Past this many frames a
+// joiner is seeded with a still and the recorder restarted for a fresh IDR.
+const JOIN_REPLAY_MAX_FRAMES = 30;
+/** A high-bitrate GOP can be costly even when its frame count is small. */
+const JOIN_REPLAY_MAX_BYTES = 2 * 1024 * 1024;
+/** Floor between joiner-triggered restarts (a room of viewers arriving at once). */
+const JOIN_RESTART_MIN_INTERVAL_MS = 3_000;
+
+/** True when a late joiner can catch up without visibly replaying history. */
+export function shouldReplayGop(frameCount: number, byteCount: number): boolean {
+  return frameCount > 0 && frameCount <= JOIN_REPLAY_MAX_FRAMES && byteCount <= JOIN_REPLAY_MAX_BYTES;
+}
+
 const RESTART_DELAY_MS = 250;
 const FAST_EXIT_MS = 2_000;
 const FAST_EXIT_LIMIT = 3;
@@ -77,9 +92,10 @@ export class VideoCapture {
   private gopFrames: Buffer[] = [];
   private gopBytes = 0;
 
-  /** Total frames emitted (diagnostics). */
+  /** Total frames emitted (diagnostics, and the stall watchdog's clock). */
   framesEmitted = 0;
   private lastFrameAt = 0;
+  private lastJoinRestart = 0;
 
   /** True when video frames flowed within the last few seconds. */
   get recentlyActive(): boolean {
@@ -133,14 +149,32 @@ export class VideoCapture {
   /**
    * Subscribe to framed envelopes. Replays the current decoder description and
    * GOP synchronously so new viewers paint without waiting for screen activity.
+   *
+   * Returns whether a keyframe was replayed. A GOP too long to replay quickly
+   * is skipped instead: the recorder is restarted for a fresh IDR (rate-
+   * limited), and the caller seeds the viewer with a still meanwhile.
    */
-  subscribe(cb: VideoSubscriber): () => void {
+  subscribe(cb: VideoSubscriber): { unsubscribe: () => void; replayed: boolean } {
     if (this.description) cb(this.description, "description");
-    for (let i = 0; i < this.gopFrames.length; i++) {
-      cb(this.gopFrames[i]!, i === 0 ? "keyframe" : "delta");
+    let replayed = false;
+    const replayIsBounded = shouldReplayGop(this.gopFrames.length, this.gopBytes);
+    if (replayIsBounded) {
+      for (let i = 0; i < this.gopFrames.length; i++) {
+        cb(this.gopFrames[i]!, i === 0 ? "keyframe" : "delta");
+      }
+      replayed = true;
+    } else if (this.gopFrames.length > 0) {
+      const now = Date.now();
+      if (now - this.lastJoinRestart >= JOIN_RESTART_MIN_INTERVAL_MS) {
+        this.lastJoinRestart = now;
+        debug(
+          `GOP too long to replay to a joiner (${this.gopFrames.length} frames, ${this.gopBytes} bytes) — forcing keyframe`,
+        );
+        this.restart();
+      }
     }
     this.subscribers.add(cb);
-    return () => this.subscribers.delete(cb);
+    return { unsubscribe: () => this.subscribers.delete(cb), replayed };
   }
 
   get hasKeyframe(): boolean {

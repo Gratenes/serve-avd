@@ -56,7 +56,7 @@ const CORS = {
 export interface PreviewInitialState {
   /** Panes to open initially: "devices", "tools", "logs" — or "none". */
   panes?: string[];
-  /** Size the emulator to fit the viewport initially. */
+  /** @deprecated Previews now fit the viewport automatically. */
   fit?: boolean;
 }
 
@@ -65,7 +65,7 @@ export interface EmuMiddlewareOptions {
   basePath?: string;
   /** Stream codec preference surfaced to the client: "auto" (default) or "mjpeg". */
   codec?: "auto" | "mjpeg";
-  /** Initial preview UI state (panes, fit). */
+  /** Initial preview UI state. */
   initialState?: PreviewInitialState;
   /** Per-session capture options (bit rate, size). */
   sessionOptions?: SessionOptions;

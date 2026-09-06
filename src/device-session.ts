@@ -68,6 +68,21 @@ const ROTATION_POLL_MS = 1_000;
 const ROTATION_SEED_DELAY_MS = 400;
 /** Floor between viewer-requested capture restarts (a room of them asks at once). */
 const VIDEO_RESTART_MIN_INTERVAL_MS = 3_000;
+/**
+ * Stall watchdog. screenrecord can wedge silently on a struggling emulator —
+ * process alive, encoder configured, not a byte for any screen change — and
+ * nothing in the video path would ever notice: a quiet stream and a stalled
+ * one look identical. Input is the tell: after this many injected inputs in a
+ * row with no frame within the grace period, the recorder is restarted.
+ */
+const STALL_INPUT_GRACE_MS = 1_500;
+const STALL_STRIKES = 3;
+/**
+ * A viewer this far behind (~2 s at the default bitrate) is better served by
+ * a reconnect — which replays a fresh, bounded GOP — than by an ever-growing
+ * backlog it can never drain.
+ */
+const VIEWER_BACKLOG_MAX_BYTES = 2 * 1024 * 1024;
 const LOGCAT_RING_MAX = 500;
 
 type TouchGestureLog = {
@@ -120,6 +135,8 @@ export class EmulatorSession {
   private pinchWarned = false;
 
   private lastVideoRestartRequest = 0;
+  private stallStrikes = 0;
+  private stallTimer: ReturnType<typeof setTimeout> | null = null;
 
   private logcatProc: ChildProcess | null = null;
   private logcatRing: string[] = [];
@@ -181,6 +198,8 @@ export class EmulatorSession {
     if (this.phase !== "running") return;
     this.phase = "stopped";
     if (this.rotationTimer) clearInterval(this.rotationTimer);
+    if (this.stallTimer) clearTimeout(this.stallTimer);
+    this.stallTimer = null;
     for (const ws of this.hidSockets) ws.close();
     this.hidSockets.clear();
     this.video.stop();
@@ -284,19 +303,23 @@ export class EmulatorSession {
     // Subscribing replays decoder config + the cached GOP, so an active stream
     // paints instantly. A fresh session has no keyframe yet — seed with a
     // screenshot so the viewer isn't black until the first IDR.
-    const unsubscribe = this.video.subscribe((envelope) => {
+    const { unsubscribe, replayed } = this.video.subscribe((envelope) => {
       if (res.writableEnded || res.destroyed) return;
-      // AVCC deltas can't be dropped (decode would corrupt); guard runaway buffering.
-      if (res.writableLength > 64 * 1024 * 1024) {
+      // AVCC deltas can't be dropped (decode would corrupt); a viewer that
+      // can't keep up is cut off to reconnect onto a fresh GOP instead.
+      if (res.writableLength > VIEWER_BACKLOG_MAX_BYTES) {
         res.destroy();
         return;
       }
       res.write(envelope);
     });
-    if (!this.video.hasKeyframe) {
+    if (!replayed) {
+      // Nothing decodable was replayed (fresh session, or a GOP too long to
+      // replay) — seed with a still so the viewer isn't black until the IDR.
+      const framesBefore = this.video.framesEmitted;
       void this.still.screenshot(2_000).then((shot) => {
         if (!shot || res.writableEnded || res.destroyed) return;
-        if (!this.video.hasKeyframe) res.write(wrapEnvelope(AVCC_TAG_SEED, shot.data));
+        if (this.video.framesEmitted === framesBefore) res.write(wrapEnvelope(AVCC_TAG_SEED, shot.data));
       });
     }
     res.on("close", unsubscribe);
@@ -461,6 +484,7 @@ export class EmulatorSession {
           if (m) {
             this.recordTouchEvent(m);
             await this.injector.touchEvent(m.type, m.x, m.y, W, H);
+            if (m.type === "end") this.expectFrames();
           }
           break;
         }
@@ -469,6 +493,7 @@ export class EmulatorSession {
           if (!m) break;
           this.record({ kind: "button", action: m.button, summary: `Button ${m.button}`, details: { button: m.button } });
           await this.injector.button(m.button);
+          this.expectFrames();
           break;
         }
         case 0x05: {
@@ -497,6 +522,7 @@ export class EmulatorSession {
           if (keycode == null) break;
           this.record({ kind: "key", action: "down", summary: `Key ${m.code}`, details: { code: m.code, key: m.code } });
           await this.injector.keyevent(keycode);
+          this.expectFrames();
           break;
         }
         case 0x07: {
@@ -538,6 +564,7 @@ export class EmulatorSession {
           if (m) {
             this.record({ kind: "scroll", action: "scroll", summary: "Scroll", details: { dx: m.dx, dy: m.dy } });
             await this.injector.scroll(m.dx, m.dy, W, H, m.x, m.y);
+            this.expectFrames();
           }
           break;
         }
@@ -551,6 +578,7 @@ export class EmulatorSession {
           if (m && typeof m.text === "string" && m.text.length > 0) {
             this.record({ kind: "text", action: "type", summary: "Type text", details: { text: m.text } });
             await this.injector.text(m.text);
+            this.expectFrames();
           }
           break;
         }
@@ -716,6 +744,29 @@ export class EmulatorSession {
     const frame = this.configFrame();
     if (!frame) return;
     for (const ws of this.hidSockets) ws.send(frame);
+  }
+
+  /**
+   * Arm the stall watchdog after an injected input: if no frame follows within
+   * the grace period, that's a strike; enough strikes in a row restart the
+   * recorder. Inputs that genuinely change nothing (a tap on dead space) cost
+   * at worst one spurious restart every few strikes — cheap next to a stream
+   * that stays frozen until someone notices.
+   */
+  private expectFrames(): void {
+    if (this.stallTimer || this.phase !== "running" || this.video.unavailable) return;
+    const framesBefore = this.video.framesEmitted;
+    this.stallTimer = setTimeout(() => {
+      this.stallTimer = null;
+      if (this.video.framesEmitted !== framesBefore) {
+        this.stallStrikes = 0;
+        return;
+      }
+      if (++this.stallStrikes < STALL_STRIKES) return;
+      this.stallStrikes = 0;
+      debug(`no frames after ${STALL_STRIKES} inputs on ${this.serial} — restarting capture`);
+      this.requestVideoRestart();
+    }, STALL_INPUT_GRACE_MS);
   }
 
   /** Re-arm capture on a viewer's request, rate-limited against a room of them. */
