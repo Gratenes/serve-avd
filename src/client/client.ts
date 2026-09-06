@@ -11,7 +11,7 @@ declare const __SERVE_AVD_VERSION__: string | undefined;
 interface BootConfig {
   basePath: string;
   codec: "auto" | "mjpeg";
-  initialState: { panes?: string[]; fit?: boolean };
+  initialState: { panes?: string[] };
   version: string;
 }
 
@@ -42,7 +42,7 @@ interface ApiState {
   version: string;
   codec: "auto" | "mjpeg";
   basePath: string;
-  initialState: { panes?: string[]; fit?: boolean };
+  initialState: { panes?: string[] };
   devices: DeviceEntry[];
   gridApiEndpoint: string;
   gridStartEndpoint: string;
@@ -69,6 +69,14 @@ const BOOT: BootConfig = (window as unknown as { __SERVE_AVD__: BootConfig }).__
 const ORIENTATIONS = ["portrait", "landscape_left", "portrait_upside_down", "landscape_right"];
 /** Floor between "send me a fresh keyframe" pokes at the server. */
 const KEYFRAME_REQUEST_MIN_MS = 3_000;
+/**
+ * Decoder backlog that counts as "behind". Deltas can't be skipped, so a
+ * decoder slower than the stream falls further behind with every frame. The
+ * queue is dropped immediately and the server is asked for a fresh keyframe.
+ */
+const DECODE_BACKLOG_MAX = 4;
+/** Pointer-move send interval — the device takes a motion event in ~15 ms. */
+const MOVE_INTERVAL_MS = 16;
 const DEBUG_FLAGS = ["overdraw", "gpu-profile", "layout-bounds", "show-taps", "pointer-location", "slow-animations"];
 
 // ── Tiny DOM helpers ───────────────────────────────────────────────────────
@@ -112,6 +120,78 @@ function wsUrl(path: string): string {
   return `${proto}//${location.host}${path}`;
 }
 
+// ── Touch cursor ───────────────────────────────────────────────────────────
+
+/** Diameter of the fingertip cursor in CSS px. */
+const TOUCH_CURSOR_SIZE = 28;
+
+/**
+ * Paint the fingertip circle at `scale`× and hand back a PNG data URL — a
+ * translucent disc with a light rim and a faint dark halo so it reads on both
+ * white and black screens. Rendered at runtime rather than shipped as an SVG
+ * cursor: every engine takes PNG cursors, and drawing at the device pixel
+ * ratio keeps the rim crisp on HiDPI displays.
+ */
+function paintTouchCursor(scale: number, pressed: boolean): string | null {
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = Math.round(TOUCH_CURSOR_SIZE * scale);
+  const g = canvas.getContext("2d");
+  if (!g) return null;
+  g.scale(scale, scale);
+  const c = TOUCH_CURSOR_SIZE / 2;
+  const r = pressed ? c - 4 : c - 2.5;
+  g.beginPath();
+  g.arc(c, c, r + 1, 0, Math.PI * 2);
+  g.strokeStyle = "rgba(0, 0, 0, 0.35)";
+  g.lineWidth = 1.5;
+  g.stroke();
+  g.beginPath();
+  g.arc(c, c, r, 0, Math.PI * 2);
+  g.fillStyle = pressed ? "rgba(255, 255, 255, 0.55)" : "rgba(255, 255, 255, 0.25)";
+  g.fill();
+  g.strokeStyle = "rgba(255, 255, 255, 0.95)";
+  g.lineWidth = 1.5;
+  g.stroke();
+  try {
+    return canvas.toDataURL("image/png");
+  } catch {
+    return null;
+  }
+}
+
+const touchCursorCache = new Map<string, string>();
+
+/**
+ * CSS `cursor` value for the fingertip: a 1× / 2× image-set where the engine
+ * supports it, a plain 1× PNG otherwise, `crosshair` as the last resort. The
+ * hotspot is the disc centre, so the touch lands where the circle sits.
+ */
+function touchCursorCss(pressed: boolean): string {
+  const key = pressed ? "pressed" : "idle";
+  const cached = touchCursorCache.get(key);
+  if (cached) return cached;
+  const hot = TOUCH_CURSOR_SIZE / 2;
+  const one = paintTouchCursor(1, pressed);
+  const two = paintTouchCursor(2, pressed);
+  const probe = document.createElement("span");
+  const candidates: string[] = [];
+  if (one && two) {
+    candidates.push(`image-set(url("${one}") 1x, url("${two}") 2x) ${hot} ${hot}, crosshair`);
+    candidates.push(`-webkit-image-set(url("${one}") 1x, url("${two}") 2x) ${hot} ${hot}, crosshair`);
+  }
+  if (one) candidates.push(`url("${one}") ${hot} ${hot}, crosshair`);
+  let value = "crosshair";
+  for (const candidate of candidates) {
+    probe.style.cursor = candidate;
+    if (probe.style.cursor) {
+      value = candidate;
+      break;
+    }
+  }
+  touchCursorCache.set(key, value);
+  return value;
+}
+
 // ── Device view ────────────────────────────────────────────────────────────
 
 class DeviceView {
@@ -119,6 +199,9 @@ class DeviceView {
   private readonly surfaceWrap: HTMLElement;
   private readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
+  private readonly resizeObserver: ResizeObserver;
+  private renderWidth = 0;
+  private renderHeight = 0;
   private img: HTMLImageElement | null = null;
   private readonly statusChip: HTMLElement;
   private readonly fpsChip: HTMLElement;
@@ -134,6 +217,7 @@ class DeviceView {
 
   private config: ScreenConfig;
   private decoder: VideoDecoder | null = null;
+  private decoderGeneration = 0;
   private lastDescription: Uint8Array | null = null;
   private awaitingKeyframe = true;
   private awaitingSince = 0;
@@ -143,6 +227,14 @@ class DeviceView {
   private lastKeyframeRequest = -Infinity;
   private timestamp = 0;
   private framesDecoded = 0;
+  private framesPresented = 0;
+  private pendingFrame: VideoFrame | null = null;
+  private paintRaf: number | null = null;
+  private presentationDrops = 0;
+  /** Wall-clock submit time per frame timestamp, for the decode-latency readout. */
+  private readonly submittedAt = new Map<number, number>();
+  private decodeLatencyMs = 0;
+  private backlogDrops = 0;
   private firstFrameSeen = false;
   private mode: "h264" | "mjpeg" = "mjpeg";
   private frameSize: { width: number; height: number } | null = null;
@@ -163,7 +255,9 @@ class DeviceView {
     this.config = entry.config ?? { width: 1080, height: 2400, orientation: "portrait", rotation: 0 };
 
     this.canvas = el("canvas", { class: "screen-canvas" });
-    const ctx = this.canvas.getContext("2d");
+    // This canvas is a pure video sink; alpha blending and synchronized
+    // compositor hand-off only add work and latency.
+    const ctx = this.canvas.getContext("2d", { alpha: false, desynchronized: true });
     if (!ctx) throw new Error("2d context unavailable");
     this.ctx = ctx;
 
@@ -173,6 +267,7 @@ class DeviceView {
 
     this.notice = el("div", { class: "device-notice hidden" });
     this.surfaceWrap = el("div", { class: "screen-wrap", tabindex: "0" }, this.canvas, this.notice);
+    this.setTouchCursor(false);
 
     this.root = el(
       "section",
@@ -186,6 +281,17 @@ class DeviceView {
       el("div", { class: "device-frame" }, this.surfaceWrap),
       this.buildControls(),
     );
+
+    // The encoded frame is much larger than the on-page phone in the common
+    // case. Keep the canvas backing store at the pixels the display can
+    // actually show instead of repainting millions of invisible pixels.
+    this.resizeObserver = new ResizeObserver(([entry]) => {
+      if (!entry) return;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      this.renderWidth = Math.max(1, Math.round(entry.contentRect.width * dpr));
+      this.renderHeight = Math.max(1, Math.round(entry.contentRect.height * dpr));
+    });
+    this.resizeObserver.observe(this.surfaceWrap);
 
     this.applyAspect();
     this.connectWs();
@@ -290,6 +396,11 @@ class DeviceView {
 
   sendButton(name: string): void {
     this.send(0x04, { button: name });
+  }
+
+  /** The mouse pointer stands in for a fingertip over the screen — show one. */
+  private setTouchCursor(pressed: boolean): void {
+    this.surfaceWrap.style.cursor = touchCursorCss(pressed);
   }
 
   /** Stream state readout — `live` colours the dot green. */
@@ -418,12 +529,26 @@ class DeviceView {
       this.configureDecoder(this.lastDescription);
       return;
     }
-    const decoder = this.decoder;
+    let decoder = this.decoder;
     if (!decoder || decoder.state === "closed") return;
     if (this.awaitingKeyframe && type !== "keyframe") return;
+    // Once this queue grows, submitting more deltas guarantees that the view
+    // stays behind. Reset immediately and ask screenrecord for a fresh IDR;
+    // if this chunk already is an IDR, use it as the clean restart point.
+    if (decoder.decodeQueueSize > DECODE_BACKLOG_MAX && this.lastDescription) {
+      this.backlogDrops++;
+      this.configureDecoder(this.lastDescription);
+      decoder = this.decoder;
+      if (!decoder) return;
+      if (type !== "keyframe") {
+        this.requestFreshKeyframe();
+        return;
+      }
+    }
     this.awaitingKeyframe = false;
     this.awaitingSince = 0;
     this.timestamp += 33_333;
+    this.submittedAt.set(this.timestamp, performance.now());
     try {
       decoder.decode(
         new EncodedVideoChunk({
@@ -440,9 +565,15 @@ class DeviceView {
   private configureDecoder(description: Uint8Array): void {
     this.teardownDecoder();
     try {
+      const generation = this.decoderGeneration;
       const decoder = new VideoDecoder({
-        output: (frame) => this.paintFrame(frame),
-        error: () => this.recoverDecoder(),
+        output: (frame) => {
+          if (generation === this.decoderGeneration) this.queueFrame(frame);
+          else frame.close();
+        },
+        error: () => {
+          if (generation === this.decoderGeneration) this.recoverDecoder();
+        },
       });
       decoder.configure({
         codec: avcCodecString(description),
@@ -484,27 +615,71 @@ class DeviceView {
   }
 
   private teardownDecoder(): void {
+    this.decoderGeneration++;
     if (this.decoder && this.decoder.state !== "closed") {
       try {
         this.decoder.close();
       } catch {}
     }
     this.decoder = null;
+    this.submittedAt.clear();
+    if (this.paintRaf !== null) cancelAnimationFrame(this.paintRaf);
+    this.paintRaf = null;
+    this.pendingFrame?.close();
+    this.pendingFrame = null;
+  }
+
+  /**
+   * WebCodecs can deliver a burst after network or decoder delay. Painting
+   * every stale output makes the main thread replay history, so retain only
+   * the newest output and present at most once per browser frame.
+   */
+  private queueFrame(frame: VideoFrame): void {
+    const submitted = this.submittedAt.get(frame.timestamp);
+    if (submitted !== undefined) {
+      this.submittedAt.delete(frame.timestamp);
+      this.decodeLatencyMs = performance.now() - submitted;
+    }
+    this.firstFrameSeen = true;
+    this.framesDecoded++;
+    this.stalledAborts = 0;
+    if (this.pendingFrame) {
+      this.pendingFrame.close();
+      this.presentationDrops++;
+    }
+    this.pendingFrame = frame;
+    if (this.paintRaf !== null) return;
+    this.paintRaf = requestAnimationFrame(() => {
+      this.paintRaf = null;
+      const latest = this.pendingFrame;
+      this.pendingFrame = null;
+      if (latest) this.paintFrame(latest);
+    });
   }
 
   private paintFrame(frame: VideoFrame): void {
     const width = frame.displayWidth || frame.codedWidth;
     const height = frame.displayHeight || frame.codedHeight;
-    if (this.canvas.width !== width || this.canvas.height !== height) {
-      this.canvas.width = width;
-      this.canvas.height = height;
-      this.noteFrameSize(width, height);
+    const raster = this.rasterSize(width, height);
+    this.noteFrameSize(width, height);
+    if (this.canvas.width !== raster.width || this.canvas.height !== raster.height) {
+      this.canvas.width = raster.width;
+      this.canvas.height = raster.height;
     }
-    this.ctx.drawImage(frame, 0, 0, width, height);
+    this.ctx.drawImage(frame, 0, 0, raster.width, raster.height);
     frame.close();
-    this.firstFrameSeen = true;
-    this.framesDecoded++;
-    this.stalledAborts = 0;
+    this.framesPresented++;
+  }
+
+  private rasterSize(sourceWidth: number, sourceHeight: number): { width: number; height: number } {
+    if (!(this.renderWidth > 0 && this.renderHeight > 0)) {
+      return { width: sourceWidth, height: sourceHeight };
+    }
+    const scale = Math.min(1, this.renderWidth / sourceWidth, this.renderHeight / sourceHeight);
+    return {
+      width: Math.max(1, Math.round(sourceWidth * scale)),
+      height: Math.max(1, Math.round(sourceHeight * scale)),
+    };
   }
 
   private async paintSeed(payload: Uint8Array): Promise<void> {
@@ -512,12 +687,13 @@ class DeviceView {
     try {
       const bitmap = await createImageBitmap(new Blob([payload as BlobPart]));
       if (this.framesDecoded !== framesAtStart) return; // a real frame beat us
-      if (this.canvas.width !== bitmap.width || this.canvas.height !== bitmap.height) {
-        this.canvas.width = bitmap.width;
-        this.canvas.height = bitmap.height;
-        this.noteFrameSize(bitmap.width, bitmap.height);
+      const raster = this.rasterSize(bitmap.width, bitmap.height);
+      this.noteFrameSize(bitmap.width, bitmap.height);
+      if (this.canvas.width !== raster.width || this.canvas.height !== raster.height) {
+        this.canvas.width = raster.width;
+        this.canvas.height = raster.height;
       }
-      this.ctx.drawImage(bitmap, 0, 0);
+      this.ctx.drawImage(bitmap, 0, 0, raster.width, raster.height);
       bitmap.close();
     } catch {}
   }
@@ -533,9 +709,15 @@ class DeviceView {
       if (this.closed) return;
       if (this.img) this.noteFrameSize(this.img.naturalWidth, this.img.naturalHeight);
       if (this.mode === "h264") {
-        const fps = this.framesDecoded - lastCount;
-        lastCount = this.framesDecoded;
+        const fps = this.framesPresented - lastCount;
+        lastCount = this.framesPresented;
         this.fpsChip.textContent = `${fps} fps`;
+        // Pipeline health on hover: decode latency, queue depth, catch-ups.
+        const queued = this.decoder?.decodeQueueSize ?? 0;
+        this.fpsChip.title =
+          `decode ${this.decodeLatencyMs.toFixed(0)} ms · ${queued} queued` +
+          (this.backlogDrops ? ` · caught up ${this.backlogDrops}×` : "") +
+          (this.presentationDrops ? ` · skipped ${this.presentationDrops} stale paints` : "");
         // Watchdog: stuck waiting for a keyframe (we joined mid-restart on a
         // static screen, or a keyframe failed to decode) → reconnect; the fresh
         // GOP replay paints instantly. Retries back off instead of stopping
@@ -577,6 +759,7 @@ class DeviceView {
       e.preventDefault();
       surface.focus();
       surface.setPointerCapture(e.pointerId);
+      this.setTouchCursor(true);
       const p = this.surfacePoint(e);
       if (e.altKey) {
         this.pinch = { anchorX: p.x, anchorY: p.y };
@@ -589,7 +772,7 @@ class DeviceView {
     surface.addEventListener("pointermove", (e) => {
       if (!surface.hasPointerCapture(e.pointerId)) return;
       const now = performance.now();
-      if (now - this.lastMoveSent < 30) return;
+      if (now - this.lastMoveSent < MOVE_INTERVAL_MS) return;
       this.lastMoveSent = now;
       const p = this.surfacePoint(e);
       if (this.pinch) {
@@ -606,6 +789,7 @@ class DeviceView {
     const endPointer = (e: PointerEvent) => {
       if (!surface.hasPointerCapture(e.pointerId)) return;
       surface.releasePointerCapture(e.pointerId);
+      this.setTouchCursor(false);
       const p = this.surfacePoint(e);
       if (this.pinch) {
         const mirrored = {
@@ -705,6 +889,7 @@ class DeviceView {
 
   destroy(): void {
     this.closed = true;
+    this.resizeObserver.disconnect();
     this.teardownDecoder();
     this.ws?.close();
     if (this.img) this.img.src = "";
@@ -1227,7 +1412,6 @@ async function main(): Promise<void> {
     el(
       "div",
       { class: "topbar-actions" },
-      button("Fit", "Fit emulator to viewport", () => document.body.classList.toggle("fit"), "ghost"),
       button("Devices", "Devices pane", () => panes.toggle("devices"), "ghost"),
       button("Tools", "Tools pane", () => panes.toggle("tools"), "ghost"),
       button("Logs", "Logcat pane", () => panes.toggle("logs"), "ghost"),
@@ -1236,7 +1420,6 @@ async function main(): Promise<void> {
 
   app.replaceChildren(header, el("div", { class: "layout" }, stage, panes.root));
 
-  if (BOOT.initialState.fit) document.body.classList.add("fit");
   const initialPanes = BOOT.initialState.panes ?? [];
   if (initialPanes.length > 0 && initialPanes[0] !== "none") panes.open(initialPanes[0]!);
 }

@@ -1093,7 +1093,7 @@ program
   .option("--codec <codec>", "Stream codec for the preview UI: auto (H.264 via WebCodecs) or mjpeg")
   .option("--theme <theme>", "Set device appearance before opening the preview: light or dark")
   .option("--panes <panes>", "Initially open preview panes: devices, tools, logs, or none")
-  .option("--fit", "Initially size the emulator to fit the preview viewport")
+  .option("--fit", "Deprecated: preview now fits the viewport automatically")
   .option("--bit-rate <mbps>", "H.264 bitrate in Mbps (default: 8)", (v) => parseFloat(v))
   .option("--size <WxH>", "Capture at a fixed size, e.g. 720x1560 (default: native)")
   .option("-l, --list [device]", "List running streams")
@@ -1106,7 +1106,7 @@ Examples:
   serve-avd Pixel_9_Pro_XL               Target an AVD by name (boots it if needed)
   serve-avd emulator-5554 -p 8080        Preview a specific serial on a custom port
   serve-avd --codec mjpeg                Force MJPEG (e.g. no WebCodecs in the browser)
-  serve-avd --panes devices,tools --fit  Open panes and fit the emulator to the viewport
+  serve-avd --panes devices,tools        Open the devices and tools panes
   serve-avd --theme dark                 Start the device in Dark Mode
   serve-avd --no-preview                 Stream in foreground without the web UI
   serve-avd --detach                     Start streaming in background (daemon)
@@ -1138,13 +1138,7 @@ Examples:
       await detach(devices, opts.port, !!opts.quiet);
       return;
     }
-    const initialState =
-      opts.panes !== undefined || opts.fit
-        ? {
-            ...(opts.panes !== undefined ? { panes: parsePanes(opts.panes) } : {}),
-            ...(opts.fit ? { fit: true } : {}),
-          }
-        : undefined;
+    const initialState = opts.panes !== undefined ? { panes: parsePanes(opts.panes) } : undefined;
     await serve(devices, {
       port: opts.port,
       host: opts.host,

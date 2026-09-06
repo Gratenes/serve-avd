@@ -113,7 +113,7 @@ Options:
   -q, --quiet         JSON-only output
       --no-preview    Skip the web UI; stream in foreground only
       --panes <panes> Initially open preview panes: devices, tools, logs, or none
-      --fit           Initially size the emulator to fit the preview viewport
+      --fit           Deprecated compatibility flag; previews now fit automatically
       --theme <theme> Set device appearance before opening the preview:
                       light or dark
       --codec <codec> Stream codec for the preview UI: 'auto' (H.264 when the
@@ -136,7 +136,7 @@ serve-avd emulator-5554 emulator-5556  # two emulators side by side
 serve-avd --detach                     # start a background server, return JSON
 serve-avd --list                       # show running streams
 serve-avd --kill                       # stop all servers
-serve-avd --panes devices,tools --fit  # start with panes open and fit the emulator
+serve-avd --panes devices,tools        # start with the devices and tools panes open
 serve-avd --theme dark                 # start the device in Dark Mode
 
 # Type text into the focused field
