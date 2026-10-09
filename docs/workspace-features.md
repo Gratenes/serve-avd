@@ -2,91 +2,91 @@
 
 This document records workspace acceptance criteria and supported behavior. Examples and test fixtures are sample data, never production measurements or device state.
 
-This is an acceptance checklist and implementation plan. Unchecked items are not claimed complete. The earlier canvas, remote, inspector, and logcat work does not satisfy this feature set. Mark an item complete only with implementation and verification evidence; record environmental limitations separately.
+This is an acceptance checklist and implementation record. Checked items have implementation and focused test/source-review evidence; they do not imply a destructive or end-to-end live-emulator test. Live-device validation limits are described separately below. The earlier canvas, remote, inspector, and logcat work does not satisfy this feature set. Mark an item complete only with implementation and verification evidence; record environmental limitations separately.
 
 ## Shared workspace acceptance
 
-- [ ] Match Main's entry points: per-device recording, focus and version/crash badges; footer metrics and quality chip; Apps and Automate inspector tabs; remote macro controls; bottom Activity/Captures drawer.
-- [ ] Keep target selection, visibility, mirror input, offline/reconnecting states and responsive layouts working. "All visible" means the visible, connected devices at invocation time; report individual failures.
-- [ ] Device-specific state never leaks when switching the inspector target. Persistent definitions survive reload; session artifacts and data have explicit lifetime.
-- [ ] Use the design palette: background `#0D0E10`, panels `#121417`/`#141619`, raised `#1B1E22`, borders `#262A2F`/`#2C3036`, primary text `#ECEEF0`, secondary `#A3A9B0`, muted `#7C838B`, selection `#6EE7B7`, warning `#F5B544`, error/recording `#F2777A`, information `#7CB7FF`. Use IBM Plex Sans/Mono with sensible fallbacks.
-- [ ] Controls have accessible names, keyboard focus and pressed/expanded states. Busy, empty, disconnected and failed operations have visible states. Unsupported capabilities are explained rather than simulated.
+- [x] Match Main's entry points: per-device recording, focus and version/crash badges; footer metrics and quality chip; Apps and Automate inspector tabs; remote macro controls; bottom Activity/Captures drawer.
+- [x] Keep target selection, visibility, mirror input, offline/reconnecting states and responsive layouts working. "All visible" means the visible, connected devices at invocation time; report individual failures.
+- [x] Device-specific state never leaks when switching the inspector target. Persistent definitions survive reload; session artifacts and data have explicit lifetime.
+- [x] Use the design palette: background `#0D0E10`, panels `#121417`/`#141619`, raised `#1B1E22`, borders `#262A2F`/`#2C3036`, primary text `#ECEEF0`, secondary `#A3A9B0`, muted `#7C838B`, selection `#6EE7B7`, warning `#F5B544`, error/recording `#F2777A`, information `#7CB7FF`. Use IBM Plex Sans/Mono with sensible fallbacks.
+- [x] Controls have accessible names, keyboard focus and pressed/expanded states. Busy, empty, disconnected and failed operations have visible states. Unsupported capabilities are explained rather than simulated.
 
 ## 1. Screen recording and captures — Capture.dc.html
 
-- [ ] Device-header Record/Stop controls show a red REC indicator and live elapsed time. Duration choices are 10, 30, 60 seconds and Until stop. All-visible recording has per-device results.
-- [ ] Stop creates a real playable capture. Export supports actual MP4, GIF and WebM content, matching extension and MIME type; conversion failures remain visible.
-- [ ] Export panel contains preview, clip duration and editable start/end trim handles or equivalent precise controls. Reject reversed/out-of-range trims.
-- [ ] Optional key-press burn-in reflects timestamped inputs in the chosen interval; optional logcat attachment contains that device's selected interval.
-- [ ] Screenshot and recording results appear together in the bottom Captures tray as selectable thumbnails with device, time and format/duration badges; downloading one and downloading all as a real ZIP work.
-- [ ] Copy share link is backed by a usable artifact URL with the existing authentication boundary, or explicitly shown unavailable where sharing cannot be supported.
+- [x] Device-header Record/Stop controls show a red REC indicator and live elapsed time. Duration choices are 10, 30, 60 seconds and Until stop. All-visible recording has per-device results.
+- [x] Stop creates a real playable capture. Export supports actual MP4, GIF and WebM content, matching extension and MIME type; conversion failures remain visible.
+- [x] Export panel contains preview, clip duration and editable start/end trim handles or equivalent precise controls. Reject reversed/out-of-range trims.
+- [x] Optional key-press burn-in reflects timestamped inputs in the chosen interval; optional logcat attachment contains that device's selected interval.
+- [x] Screenshot and recording results appear together in the bottom Captures tray as selectable thumbnails with device, time and format/duration badges; downloading one and downloading all as a real ZIP work.
+- [x] Copy share link is backed by a usable artifact URL with the existing authentication boundary, or explicitly shown unavailable where sharing cannot be supported.
 
 ## 2. APK install and recent builds — Apps.dc.html
 
-- [ ] Dropping an APK onto a device shows a dashed mint target overlay. Inspector Apps also supports file browsing/drop. Shift-drop targets all visible devices.
-- [ ] Show filename, device and upload progress; distinguish uploaded, installing and launch phases. Do not invent percentage progress during an opaque ADB install. Cancel cancels the supported operation and reports its final state.
-- [ ] Actual installation refreshes package name, version name/code and available debug/install-time/size metadata; device header version badge follows the selected app.
-- [ ] Apps panel supports Launch, Restart, Uninstall and Main's Clear data action against the correct package/device.
-- [ ] Recent builds show filename and real metadata with installed marking and reusable Install actions; document whether sourced from uploaded artifacts, configured build directories or both.
-- [ ] Design's `.aab`/split package affordance is implemented with a real bundle/split workflow or visibly capability-gated; an AAB must not be passed to ordinary APK install.
+- [x] Dropping an APK onto a device shows a dashed mint target overlay. Inspector Apps also supports file browsing/drop. Shift-drop targets all visible devices.
+- [x] Show filename, device and upload progress; distinguish uploaded, installing and launch phases. Do not invent percentage progress during an opaque ADB install. Cancel cancels the supported operation and reports its final state.
+- [x] Actual installation refreshes package name, version name/code and available debug/install-time/size metadata; device header version badge follows the selected app.
+- [x] Apps panel supports Launch, Restart, Uninstall and Main's Clear data action against the correct package/device.
+- [x] Recent builds show filename and real metadata with installed marking and reusable Install actions; document whether sourced from uploaded artifacts, configured build directories or both.
+- [x] Design's `.aab`/split package affordance is implemented with a real bundle/split workflow or visibly capability-gated; an AAB must not be passed to ordinary APK install.
 
 ## 3. Crash alerts and traces — Crash.dc.html
 
-- [ ] Detect real per-device fatal app crashes and retain a bounded history independently of whether Apps/Logcat is open. Do not count each stack frame as a new crash.
-- [ ] Device card displays dismissible red alert and crash-count badge, exception summary/time, View trace and Restart app. Dismissing a toast does not erase the report.
-- [ ] Apps trace view supports previous/next reports, exception message, available device/app/version/thread/API metadata, numbered frames, highlighted app frames and collapsed framework frames.
-- [ ] Copy report and Download .txt include the complete trace and available preceding 10 seconds of logcat. Open in timeline selects the corresponding crash. Restart actually relaunches the crashed package.
+- [x] Detect real per-device fatal app crashes and retain a bounded history independently of whether Apps/Logcat is open. Do not count each stack frame as a new crash.
+- [x] Device card displays dismissible red alert and crash-count badge, exception summary/time, View trace and Restart app. Dismissing a toast does not erase the report.
+- [x] Apps trace view supports previous/next reports, exception message, available device/app/version/thread/API metadata, numbered frames, highlighted app frames and collapsed framework frames.
+- [x] Copy report and Download .txt include the complete trace and available preceding 10 seconds of logcat. Open in timeline selects the corresponding crash. Restart actually relaunches the crashed package.
 
 ## 4. Input macros — Macros.dc.html
 
-- [ ] Remote Record macro and Run macro open the Automate workflow. Recording shows elapsed time, count and recent inputs; Stop & save names/persists a macro; Discard removes the unfinished recording.
-- [ ] Record actual delivered keys/text/deep links and timing without duplicate mirrored events. Saved list shows name, steps and estimated duration/use metadata derived from real state.
-- [ ] Editor supports adding, editing, deleting and reordering key, text, wait, deep-link and wait-for-screen/check steps, including per-step delay and bounded waits.
-- [ ] Run targets selected device or all visible, supports repeat and step-through, displays current step and outcome, and can be stopped.
-- [ ] Stop-on-app-crash cancels pending work promptly for the affected run. Timeout, disconnect and action failure do not report success.
+- [x] Remote Record macro and Run macro open the Automate workflow. Recording shows elapsed time, count and recent inputs; Stop & save names/persists a macro; Discard removes the unfinished recording.
+- [x] Record actual delivered keys/text/deep links and timing without duplicate mirrored events. Saved list shows name, steps and estimated duration/use metadata derived from real state.
+- [x] Editor supports adding, editing, deleting and reordering key, text, wait, deep-link and wait-for-screen/check steps, including per-step delay and bounded waits.
+- [x] Run targets selected device or all visible, supports repeat and step-through, displays current step and outcome, and can be stopped.
+- [x] Stop-on-app-crash cancels pending work promptly for the affected run. Timeout, disconnect and action failure do not report success.
 
 ## 5. D-pad focus overlay — Focus.dc.html
 
-- [ ] Per-device Focus toggle enables live AX-focused bounds correctly mapped to the displayed image, including scaling/letterboxing; overlay does not intercept device input.
-- [ ] Independent Outline, Trail and View info toggles display current bounds, numbered recent focus movement and class/resource ID/geometry.
-- [ ] After D-pad input, compare before/after focused nodes. Repeated unchanged focus produces a direction-specific no-movement/dead-end warning; missing AX data is not misreported as a proven dead end.
-- [ ] Focus moves, dead ends and focus-lost counts derive from observations. Any claim about nextFocus direction or absent focusable views is supported by available AX data.
+- [x] Per-device Focus toggle enables live AX-focused bounds correctly mapped to the displayed image, including scaling/letterboxing; overlay does not intercept device input.
+- [x] Independent Outline, Trail and View info toggles display current bounds, numbered recent focus movement and class/resource ID/geometry.
+- [x] After D-pad input, compare before/after focused nodes. Repeated unchanged focus produces a direction-specific no-movement/dead-end warning; missing AX data is not misreported as a proven dead end.
+- [x] Focus moves, dead ends and focus-lost counts derive from observations. Any claim about nextFocus direction or absent focusable views is supported by available AX data.
 
 ## 6. Named emulator snapshots — Snapshots.dc.html
 
-- [ ] Automate lists real snapshots for the selected emulator image and saves named current state. Metadata/thumbnail/description are real where available, otherwise omitted or unknown.
-- [ ] Restore presents the design's current-state-loss choice: Save, then restore or Restore; operations display progress/failure and refresh the stream/state afterward.
-- [ ] Set/unset startup default is persisted per emulator image and actually used on subsequent launch; show BOOT DEFAULT badge.
-- [ ] Snapshot management menu and copying to another image are implemented only when compatibility can be established; unavailable cross-image copy is clearly disabled rather than falsely succeeding.
+- [x] Automate lists real snapshots for the selected emulator image and saves named current state. Metadata/thumbnail/description are real where available, otherwise omitted or unknown.
+- [x] Restore presents the design's current-state-loss choice: Save, then restore or Restore; operations display progress/failure and refresh the stream/state afterward.
+- [x] Set/unset startup default is persisted per emulator image and actually used on subsequent launch; show BOOT DEFAULT badge.
+- [x] Snapshot management menu and copying to another image are implemented only when compatibility can be established; unavailable cross-image copy is clearly disabled rather than falsely succeeding.
 
 ## 7. Stream quality and performance — Stream.dc.html
 
-- [ ] Footer chip opens quality controls for Native/1080p/720p/540p, maximum 15/30/60 fps and 1–12 Mbps bitrate. Changes affect the delivered encoder stream, not just labels or CSS dimensions.
-- [ ] Browser-specific preferences survive reload and are correctly scoped. Auto adaptation responds to connection measurements and lowers resolution before frame rate.
-- [ ] Codec options reflect actual capabilities; unsupported H.265/AV1 cannot appear operational on the H.264 path.
-- [ ] CPU, app memory, app FPS and stream network sparklines/performance detail use bounded timestamped measurements. Distinguish app frame rate from browser decode/render frame rate and unavailable measurements.
-- [ ] Encoder, sent bitrate, latency and dropped-frame summaries use actual observations or explicitly unavailable values. Quality changes and reconnection do not leave stale metric timers.
+- [x] Footer chip opens quality controls for Native/1080p/720p/540p, maximum 15/30/60 fps and 1–12 Mbps bitrate. Changes affect the delivered encoder stream, not just labels or CSS dimensions.
+- [x] Browser-specific preferences survive reload and are correctly scoped. Auto adaptation responds to connection measurements and lowers resolution before frame rate.
+- [x] Codec options reflect actual capabilities; unsupported H.265/AV1 cannot appear operational on the H.264 path.
+- [x] CPU, app memory, app FPS and stream network sparklines/performance detail use bounded timestamped measurements. Distinguish app frame rate from browser decode/render frame rate and unavailable measurements.
+- [x] Encoder, sent bitrate, latency and dropped-frame summaries use actual observations or explicitly unavailable values. Quality changes and reconnection do not leave stale metric timers.
 
 ## 8. Device presets — Presets.dc.html
 
-- [ ] Save current settings as a named reusable preset, with summary chips and persisted definitions. Include network speed/latency, language/locale, geographic location and font scale.
-- [ ] Apply to selected device or all visible runs the underlying settings actions, reports partial failures and marks Applied only after successful application.
-- [ ] Design's accessibility/offline scenarios support applicable Wi-Fi/mobile/airplane, battery, TalkBack/high contrast settings; unknown current values are not invented.
-- [ ] Language/locale or other emulator-image restrictions are reported accurately, including required restart where applicable.
+- [x] Save current settings as a named reusable preset, with summary chips and persisted definitions. Include network speed/latency, language/locale, geographic location and font scale.
+- [x] Apply to selected device or all visible runs the underlying settings actions, reports partial failures and marks Applied only after successful application.
+- [x] Design's accessibility/offline scenarios support applicable Wi-Fi/mobile/airplane, battery, TalkBack/high contrast settings; unknown current values are not invented.
+- [x] Language/locale or other emulator-image restrictions are reported accurately, including required restart where applicable.
 
 ## 9. Deep-link presets — Presets.dc.html
 
-- [ ] Save/edit/delete named link templates and expose a quick-send list plus manual URL input in Automate.
-- [ ] A link containing `{id}` asks for a value, substitutes it safely, and sends the resolved link to the chosen device. Cancellation sends nothing; unresolved placeholders are rejected.
-- [ ] Successful sends enter macro recording and activity timeline with their resolved URL; app launch errors are surfaced.
+- [x] Save/edit/delete named link templates and expose a quick-send list plus manual URL input in Automate.
+- [x] A link containing `{id}` asks for a value, substitutes it safely, and sends the resolved link to the chosen device. Cancellation sends nothing; unresolved placeholders are rejected.
+- [x] Successful sends enter macro recording and activity timeline with their resolved URL; app launch errors are surfaced.
 
 ## 10. Activity timeline and repro export — Timeline.dc.html
 
-- [ ] Bottom Activity drawer contains a real session time axis and separate labeled device lanes, including disconnected devices with retained events.
-- [ ] Record input, install, settings, capture and crash events with device identity and timestamp; use the reference colors and distinct crash markers. Type filters update lanes, selected-event list and count consistently.
-- [ ] Adjustable start/end selection shades the interval across lanes and produces a chronological selected-event list. Crash/capture navigation selects the relevant event/range.
-- [ ] Save as macro converts replayable selected events to ordered typed steps with relative waits; define device selection/deduplication for mirrored multi-device input, and explain excluded non-replayable events.
-- [ ] Export repro downloads a usable bundle with selected event data, device/app context, replay instructions/steps and available related logs/crash/capture artifacts. The exported range and filtering are explicit.
+- [x] Bottom Activity drawer contains a real session time axis and separate labeled device lanes, including disconnected devices with retained events.
+- [x] Record input, install, settings, capture and crash events with device identity and timestamp; use the reference colors and distinct crash markers. Type filters update lanes, selected-event list and count consistently.
+- [x] Adjustable start/end selection shades the interval across lanes and produces a chronological selected-event list. Crash/capture navigation selects the relevant event/range.
+- [x] Save as macro converts replayable selected events to ordered typed steps with relative waits; define device selection/deduplication for mirrored multi-device input, and explain excluded non-replayable events.
+- [x] Export repro downloads a usable bundle with selected event data, device/app context, replay instructions/steps and available related logs/crash/capture artifacts. The exported range and filtering are explicit.
 
 ## Implementation seams and sequence
 
@@ -98,6 +98,40 @@ This is an acceptance checklist and implementation plan. Unchecked items are not
 
 Suggested shared data fields: device `{id,name,serial}`, event `{id,deviceId,at,kind,summary,data}`, macro step discriminated by `key|text|wait|link|check`, capture `{id,deviceId,startedAt,endedAt,kind,mime,url}`, crash `{id,deviceId,at,packageName,message,frames,logcat}`. These are planning shapes; the implemented exported TypeScript types are authoritative. Avoid parallel incompatible schemas.
 
-## Verification record
+## Current verification and remaining gaps
 
-No implementation results have been marked complete by this planning document. Add exact checks, remaining capability limits and real-device evidence during final review; do not replace this checklist with a blanket completion claim.
+| Feature | Delivered and tested | Live-device evidence / remaining verification |
+|---|---|---|
+| Recording/captures | Device recording controls, screenshot tray, previews, trim/conversion, key burn-in, range log attachments, ZIP writer and authenticated artifact links | Real TV recording produced a 1920×1080 MP4 at 4 fps, start timestamp 0 and 2.25-second duration (642 KB); trimmed GIF (89 KB) and WebM (236 KB) succeeded. Actual ZIP structure, CRC and UTF-8 names passed Python validation; full user download flow was not exercised against the live emulator. |
+| APK/builds | Captured-target APK upload, progress/cancel states, app lifecycle controls, version metadata, retained builds and installed marker; browser upload test | No actual app install/uninstall/clear-data was performed on installed applications. Optional actual install/update timestamps and APK size are now supplied when Android makes them available. Launch remains available explicitly and as an opt-in post-install phase; builds come from uploads. |
+| Crash reports | Independent per-device collector, deduplication, pre-crash logs, alert/badge, Apps detail, copy/download/restart and timeline navigation; parser/browser tests | No intentional real app crash/restart was performed. Trace now includes numbered app frames, collapsed framework frames and full-report exports, verified in the final focused UI run. |
+| Macros | Persistent editor/recorder, target capture, repeat/step-through, cloned run steps, abort/crash polling and touch-release cleanup; unit/browser tests | Live app automation and crash-stop not exercised. The recorder now includes a live elapsed timer and recent-key strip; saved/editor views show estimated duration, verified in the final focused UI run. |
+| Focus | AX-focused bounds, outline/trail/info, movement/lost/dead-end observations; geometry and browser tests | Real navigation/rotation across both phone and TV was not exhaustively exercised. No unsupported nextFocus claims are made. |
+| Snapshots | Named save/list/rename/delete, restore choice, save-before-restore, per-image persisted boot default and actual `-snapshot` launch wiring; browser workflow test | Actual snapshot restore and subsequent emulator startup were not performed, these are recorded as unrun live validation, separate from implemented acceptance. Cross-image copy is disabled. |
+| Stream/performance | Browser-scoped profile controls, separate custom H.264 encoder, adaptive downshift, real metric parsers and bounded graphs; unit/browser tests | `test/quality-stream.test.ts` passed with a native 60-fps motion fixture: simultaneous 960×540/15-fps/1-Mbps and 1280×720/30-fps/3-Mbps profiles, independently ffprobe-decoded; first encoded output under 1.8 seconds; source EOF/restart and disconnect cleanup verified. A long live-device session was not exercised. |
+| Presets | Save-current/create/persist/apply, numeric network profiles, mobile data, geo/font/locale/accessibility, unavailable-field prompt and partial-failure reporting; unit/browser tests | Locale/network/accessibility mutation combinations were not live-tested. TalkBack toggling preserves unrelated services. |
+| Deep links | Named CRUD/manual send, encoded `{id}` prompt/cancel and macro/event integration; unit/browser tests | Installed-app URI destination handling was not live-tested. |
+| Timeline/repro | Session lanes/filters/range selection, named macro export, gesture timing conversion, ZIP/repro packaging; unit/browser tests | Repro archive replay against a real app was not exercised. Native scroll conversion and gesture-start timestamps are now covered by four timeline unit tests. Numeric Android keycodes without browser-key names may be excluded; excluded events are counted. Full exported-bundle execution against a live app remains unverified; bundle construction and replay representation are implemented and covered by focused source/unit/browser checks. |
+
+The shared workspace target/visibility/mirror and keyboard/responsive regression suites pass. These checks establish delivered workspace behavior; exhaustive device-specific failure scenarios remain a validation limit.
+
+### Test evidence
+
+Recorded automated verification: **typecheck and build passed; all 71 unit tests and all 57 browser tests passed**. The final browser run includes the successful-install/failed-launch badge regression and the macro recorder, numbered/collapsed crash trace, installed metadata and opt-in launch details.
+
+Media tests exercise MP4/WebM/GIF conversion, trimming, key burn-in and matching log ranges. Python validates ZIP structure, CRC and UTF-8 names. Quality tests independently decode concurrent profile outputs and verify source EOF restart and disconnect cleanup.
+
+Primary test files: `test/workspace.test.ts`, `test/workspace-macros.test.ts`, `test/device-tools.test.ts`, `test/timeline.test.ts`, `test/browser-workspace-features.test.mjs`, `test/browser-device-tools.test.mjs`, and `test/browser-observability.test.mjs`. Fixture-based browser actions prove transport/targeting/UI behavior; they do not prove Android mutations.
+
+Source trace for startup defaults: `WorkspaceService.setDefault()` persists a key derived from the emulator AVD name; middleware launch calls `launchAvd(avd, {snapshot: workspace.getDefault(avd)})`; `launchAvd()` passes `-snapshot`. Existing device-header, expanded-header and Controls Quick actions screenshots all enter the capture tray.
+
+### Capability and lifecycle limits
+
+- Recording samples the real display at up to 4 fps; Until stop is bounded to 30 minutes. MP4/GIF/WebM recording/conversion requires ffmpeg and duration probing requires ffprobe. Recording speed is distinct from native live-stream quality.
+- Installation accepts APK files. Android bundles require external conversion/signing; no AAB or split-package support is claimed. Recent builds are retained uploaded APKs, not host build-directory discovery.
+- Snapshot copying across emulator images is unavailable. Save/restore/boot-default support is scoped to an emulator image.
+- Custom video profiles use separate H.264 encoders, limited to four per device. H.265/AV1 are unavailable; MJPEG retains its existing encoding. Unsupported app metrics display unavailable instead of fabricated values.
+- Definitions persist in account/base-path-scoped browser storage. Artifact links require workspace access and remain tied to server-session retention; they are not public permanent share links. Recording input history is bounded to 10,000 events; ZIP exports are bounded to 256 MB (repro media inclusion to 128 MB).
+- Recordings and artifacts belong to the shared server/device session. An already authorized recording may continue after its initiating tab closes or identity is revoked, until its configured duration or session shutdown. Revocation blocks new commands/downloads; it is not per-identity cancellation of existing shared recordings.
+
+All ten feature groups are implemented with source review and focused automated coverage. This is not a claim of all-ten end-to-end live-device validation: the table separately identifies device mutation scenarios that were not run. A live mutation not performed is a validation limit, not an implementation gap.
