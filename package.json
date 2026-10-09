@@ -32,7 +32,7 @@
     "serve-avd": "dist/serve-avd.js"
   },
   "engines": {
-    "node": ">=18.17"
+    "node": ">=22"
   },
   "files": [
     "dist/serve-avd.js",
@@ -49,7 +49,9 @@
     "src/ax.ts",
     "src/adb.ts",
     "src/actions.ts",
-    "src/replay.ts"
+    "src/replay.ts",
+    "src/auth.ts",
+    "src/auth-page.ts"
   ],
   "exports": {
     "./middleware": {
@@ -75,10 +77,13 @@
     "test:browser": "npm run build && node --test test/browser*.test.mjs"
   },
   "dependencies": {
+    "@node-rs/argon2": "^2.2.2",
+    "better-sqlite3": "^13.0.3",
     "commander": "^14.0.1",
     "ws": "^8.21.0"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^20.11.0",
     "@types/ws": "^8.18.1",
     "esbuild": "^0.25.0",

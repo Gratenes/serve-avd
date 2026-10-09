@@ -35,6 +35,8 @@ import { resolveDriver, type DeviceDriver } from "./driver";
 import { eventsToScript, runScript, parseScript, type ReplayScript } from "./replay";
 import { runMcpServer } from "./mcp";
 import type { PreviewInitialState } from "./middleware";
+import { configuredAuth, provisionAccount } from "./auth-cli";
+import { AuthService, type AuthOptions } from "./auth";
 
 declare const __SERVE_AVD_VERSION__: string | undefined;
 const VERSION = typeof __SERVE_AVD_VERSION__ === "string" ? __SERVE_AVD_VERSION__ : "dev";
@@ -121,12 +123,13 @@ interface ServeOpts {
   bitRate?: number;
   size?: string;
   preview: boolean;
+  auth?: AuthOptions;
 }
 
 async function serve(devices: string[], opts: ServeOpts): Promise<void> {
   const defaultPort = opts.preview ? 3200 : 3100;
-  const serials = await resolveTargets(devices, opts.quiet);
   const running = await startServer({
+    auth: opts.auth,
     port: opts.port ?? defaultPort,
     strictPort: opts.port !== undefined,
     host: opts.host,
@@ -139,10 +142,16 @@ async function serve(devices: string[], opts: ServeOpts): Promise<void> {
   });
 
   const states: ServeAvdDeviceState[] = [];
-  for (const serial of serials) {
-    const state = await running.attach(serial);
-    if (opts.theme) await peekDeviceSession(serial)?.injector.setTheme(opts.theme);
-    states.push(state);
+  try {
+    const serials = await resolveTargets(devices, opts.quiet);
+    for (const serial of serials) {
+      const state = await running.attach(serial);
+      if (opts.theme) await peekDeviceSession(serial)?.injector.setTheme(opts.theme);
+      states.push(state);
+    }
+  } catch (error) {
+    running.close();
+    throw error;
   }
 
   const shutdown = () => {
@@ -172,12 +181,16 @@ async function serve(devices: string[], opts: ServeOpts): Promise<void> {
   }
 }
 
-async function detach(devices: string[], port: number | undefined, quiet: boolean): Promise<void> {
+async function detach(devices: string[], port: number | undefined, quiet: boolean, auth?: AuthOptions): Promise<void> {
+  if (auth) new AuthService(auth).close();
   // Re-exec ourselves headless in the background; wait for state files.
   const serials = await resolveTargets(devices, quiet);
   const before = new Map(readAllStates().map((s) => [s.device, s.pid]));
   const args = [process.argv[1]!, ...serials, "--no-preview", "-q"];
   if (port !== undefined) args.push("-p", String(port));
+  if (auth) args.push("--auth-database", auth.databasePath, "--auth-origin", auth.origin,
+    ...(auth.absoluteTtlMs ? ["--auth-absolute-ttl", String(auth.absoluteTtlMs)] : []),
+    ...(auth.idleTtlMs ? ["--auth-idle-ttl", String(auth.idleTtlMs)] : []));
   const child = spawn(process.execPath, args, { detached: true, stdio: "ignore" });
   child.unref();
 
@@ -1087,6 +1100,10 @@ program
   .argument("[device...]", "adb serial(s) or AVD name(s) — default: every online device, booting an AVD when none are")
   .option("-p, --port <port>", "Starting port (preview default: 3200; --no-preview default: 3100)", (v) => parseInt(v, 10))
   .option("--host <host>", "Host to bind (default: 127.0.0.1; use 0.0.0.0 for LAN)")
+  .option("--auth-database <path>", "Persistent SQLite account database (or SERVE_AVD_AUTH_DATABASE)")
+  .option("--auth-origin <origin>", "Exact external origin (or SERVE_AVD_AUTH_ORIGIN)")
+  .option("--auth-absolute-ttl <ms>", "Absolute session lifetime in milliseconds (default 43200000)")
+  .option("--auth-idle-ttl <ms>", "Idle session lifetime in milliseconds (default 3600000)")
   .option("-d, --detach", "Spawn a background server and exit (daemon mode)")
   .option("-q, --quiet", "JSON-only output")
   .option("--no-preview", "Skip the web UI; stream in foreground only")
@@ -1134,8 +1151,9 @@ Examples:
       console.error("--theme must be 'light' or 'dark'");
       process.exit(1);
     }
+    const auth = configuredAuth(opts);
     if (opts.detach) {
-      await detach(devices, opts.port, !!opts.quiet);
+      await detach(devices, opts.port, !!opts.quiet, auth);
       return;
     }
     const initialState = opts.panes !== undefined ? { panes: parsePanes(opts.panes) } : undefined;
@@ -1149,8 +1167,17 @@ Examples:
       bitRate: opts.bitRate,
       size: opts.size,
       preview: opts.preview !== false,
+      auth,
     });
   });
+
+for (const mode of ["bootstrap", "recover"] as const) {
+  program.command(`auth-${mode}`)
+    .description(mode === "bootstrap" ? "Interactively provision the first administrator" : "Locally recover an administrator and revoke their sessions")
+    .option("--auth-database <path>", "Persistent SQLite account database")
+    .option("--auth-origin <origin>", "Exact external origin")
+    .action((opts) => provisionAccount(mode, { ...program.opts(), ...opts }));
+}
 
 const deviceOpt = ["-d, --device <serial>", "Target a specific device (adb serial or name)"] as const;
 
@@ -1470,10 +1497,15 @@ program
   .option(...deviceOpt)
   .option("--serve", "Also host the preview server in-process (so humans can watch at localhost:3200)")
   .option("-p, --port <port>", "Preview port for --serve (default 3200)", (v) => parseInt(v, 10))
+  .option("--auth-database <path>", "Persistent SQLite account database for --serve")
+  .option("--auth-origin <origin>", "Exact external origin for --serve")
+  .option("--auth-absolute-ttl <ms>", "Absolute session lifetime in milliseconds")
+  .option("--auth-idle-ttl <ms>", "Idle session lifetime in milliseconds")
   .action((opts) =>
     runMcpServer({
       device: opts.device,
       serve: !!opts.serve,
+      auth: opts.serve ? configuredAuth({ ...program.opts(), ...opts }) : undefined,
       port: opts.port,
       version: VERSION,
       resolveDevices: (args) => resolveTargets(args, true),
