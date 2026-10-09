@@ -347,10 +347,13 @@ class DeviceView {
 
     this.root.querySelector(".device-frame")!.append(this.root.querySelector(".device-control-sidebar")!);
 
+    const focus = workspaceButton("focus", "Focus this device", () => this.root.dispatchEvent(new Event("devicefocus")));
+    focus.classList.add("device-focus");
     const actions = el("div", { class: "device-head-actions" },
       iconButton("camera", "Screenshot", () => window.open(this.entry.screenshotEndpoint, "_blank")),
       iconButton("rotateCcw", "Rotate", () => this.rotateStep(1)),
       workspaceButton("expand", "Fill screen with this device", () => this.root.dispatchEvent(new Event("devicefill"))),
+      focus,
       workspaceButton("close", "Hide from workspace", () => this.root.dispatchEvent(new Event("devicehide"))));
     this.root.querySelector(".device-head")!.append(actions);
 
@@ -1746,9 +1749,9 @@ async function main(): Promise<void> {
   mirrorButton.setAttribute("role", "switch");
   const layouts = el("div", { class: "layout-picker", role: "group", "aria-label": "Device layout" });
   const layoutButtons = new Map<Layout, HTMLButtonElement>();
-  for (const name of ["grid", "split", "stack"] as const) {
+  for (const name of ["focus", "grid", "split", "stack"] as const) {
     const label = name[0]!.toUpperCase() + name.slice(1);
-    const b = button(`${workspaceIcons[name === "grid" ? "split" : name]}<span>${label}</span>`, `${label} arrangement on the canvas`, () => { layout = name; update(); canvas.arrange(name); });
+    const b = button(`${workspaceIcons[name]}<span>${label}</span>`, `${label} arrangement on the canvas`, () => { layout = name; update(); canvas.arrange(name); });
     b.setAttribute("aria-label", label);
     layoutButtons.set(name, b);
     layouts.append(b);
@@ -1819,6 +1822,9 @@ async function main(): Promise<void> {
       const id = view.entry.device;
       const active = id === activeDeviceId;
       view.root.classList.toggle("selected-device", active);
+      const focus = view.root.querySelector<HTMLButtonElement>(".device-focus")!;
+      focus.title = layout === "focus" && active ? "Back to split layout" : "Focus this device";
+      focus.setAttribute("aria-label", focus.title);
       view.root.hidden = !shown.includes(view);
       view.setSuspended(document.hidden || !shown.includes(view));
       const nodes = railNodes.get(id)!;
@@ -1830,7 +1836,7 @@ async function main(): Promise<void> {
       nodes.eye.setAttribute("aria-pressed", String(!hidden.has(id)));
       nodes.eye.innerHTML = hidden.has(id) ? workspaceIcons.eyeOff : workspaceIcons.eye;
     }
-    canvas.sync(views.map(v => ({ id: v.entry.device, root: v.root })), !mobile.matches);
+    canvas.sync(views.map(v => ({ id: v.entry.device, root: v.root })), !mobile.matches, layout, activeDeviceId);
     remote.setVisible(showRemote);
     updateRemote();
   }
@@ -1872,7 +1878,7 @@ async function main(): Promise<void> {
       el("span", { class: "rail-name" }, el("span", { class: "status-dot" }), el("strong", { text: entry.name })));
     const meta = el("span", { class: "rail-meta" });
     select.append(meta);
-    select.addEventListener("click", () => { selectDevice(entry.device); canvas.fit([{ id: entry.device, root: view.root }]); if (mobile.matches) { showRail = false; update(); } });
+    select.addEventListener("click", () => { selectDevice(entry.device); if (layout !== "focus") canvas.fit([{ id: entry.device, root: view.root }]); if (mobile.matches) { showRail = false; update(); } });
     const eye = workspaceButton("eye", `Hide ${entry.name}`, () => toggleDevice(entry.device));
     eye.classList.add("rail-eye");
     eye.setAttribute("aria-pressed", "true");
@@ -1893,15 +1899,32 @@ async function main(): Promise<void> {
     railNodes.set(entry.device, { row, select, eye, meta });
     railList.append(row);
     if (!hidden.has(entry.device)) activeDeviceId ??= entry.device;
-    view.root.addEventListener("pointerdown", () => selectDevice(entry.device, false), true);
+    view.root.addEventListener("pointerdown", event => {
+      const target = event.target as Element;
+      if (target.closest("button, input, textarea, select, summary, a, [contenteditable], [role=button]")) return;
+      if (view.root.classList.contains("focus-thumbnail") && target.closest(".screen-wrap")) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+      selectDevice(entry.device, false);
+    }, true);
     view.root.addEventListener("click", event => {
       const target = event.target as Element;
       if (!target.closest("button, input, textarea, select, summary, a, [contenteditable], [role=button]")) selectDevice(entry.device);
     });
-    view.root.addEventListener("focusin", () => selectDevice(entry.device, false));
+    view.root.addEventListener("focusin", event => {
+      if (!(event.target as Element).closest(".device-focus")) selectDevice(entry.device, false);
+    });
     view.root.addEventListener("devicechange", updateRemote);
     view.root.addEventListener("canvasselect", event => selectDevice(entry.device, (event as CustomEvent<boolean>).detail));
     view.root.addEventListener("devicefill", () => { selectDevice(entry.device); canvas.fill(entry.device); });
+    view.root.addEventListener("devicefocus", () => {
+      const returning = layout === "focus" && activeDeviceId === entry.device;
+      selectDevice(entry.device, false);
+      layout = returning ? "split" : "focus";
+      update();
+      canvas.arrange(layout);
+    });
     view.root.addEventListener("devicehide", () => toggleDevice(entry.device));
   };
   api.devices.forEach(addView);

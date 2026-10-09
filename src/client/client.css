@@ -73,8 +73,9 @@ input[type=range], input[type=checkbox] { accent-color: var(--accent); }
 .workspace-stage { flex: 1; min-width: 0; position: relative; overflow: auto; background: var(--bg); }
 .stage { padding: 20px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; align-items: start; align-content: start; min-width: 0; }
 .stage[data-layout=stack] { grid-template-columns: minmax(0, 720px); justify-content: center; }
-.stage[data-layout=focus] { grid-template-columns: minmax(0, 1fr) 180px; gap: 16px; }
-.stage[data-layout=focus] .selected-device { grid-row: span 20; }
+.stage[data-layout=focus] { grid-template-columns: minmax(0, 1fr) 220px; gap: 16px; }
+.stage[data-layout=focus] .focus-primary { grid-column: 1; grid-row: 1 / span 100; }
+.stage[data-layout=focus] .focus-thumbnail { grid-column: 2; }
 .stage[data-count="1"] { grid-template-columns: minmax(0, 1fr); }
 .device { min-width: 0; max-width: 100%; background: #141619; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
 .device.selected-device { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
@@ -121,7 +122,7 @@ summary { cursor: pointer; color: var(--text-dim); font-size: 11px; padding: 8px
 .text-actions, .nav-row, .tool-row { display: flex; gap: 6px; flex-wrap: wrap; }
 .tool-row { margin-top: 6px; }
 .focus-thumbnail .device-chips, .focus-thumbnail .device-controls, .focus-thumbnail .remote-badge, .focus-thumbnail .device-control-sidebar { display: none; }
-.focus-thumbnail .device-head-actions .btn:nth-child(-n+2) { display: none; }
+.focus-thumbnail .device-head-actions .btn:nth-child(-n+3) { display: none; }
 .focus-thumbnail .device-head { padding-left: 8px; }
 .focus-thumbnail .device-frame { padding: 5px; }
 .empty { text-align: center; padding: 64px 24px; color: var(--text-dim); }
@@ -144,7 +145,7 @@ summary { cursor: pointer; color: var(--text-dim); font-size: 11px; padding: 8px
   .panes.inspector { width: 300px; }
   .stage { gap: 12px; padding: 12px; grid-template-columns: minmax(0, 1fr); }
   .stage[data-layout=focus] { grid-template-columns: minmax(0, 1fr); }
-  .stage[data-layout=focus] .selected-device { grid-row: auto; }
+  .stage[data-layout=focus] .focus-primary, .stage[data-layout=focus] .focus-thumbnail { grid-column: auto; grid-row: auto; }
 }
 @media (max-width: 700px), (pointer: coarse) and (max-height: 500px) {
   .topbar { flex-wrap: wrap; padding: max(8px, env(safe-area-inset-top)) 12px 8px; gap: 8px; }
@@ -362,6 +363,12 @@ summary { cursor: pointer; color: var(--text-dim); font-size: 11px; padding: 8px
 .canvas-workspace .stage { position: absolute; inset: 0 auto auto 0; width: 0; height: 0; padding: 0; display: block; transform-origin: 0 0; }
 .canvas-workspace .stage > .device { position: absolute; width: 336px; max-width: none; }
 .canvas-workspace .stage > .device.landscape { width: 640px; }
+.canvas-workspace .stage[data-layout=focus] > .device { width: var(--focus-width, 220px); }
+.canvas-workspace .focus-primary .screen-wrap { width: min(100%, calc(var(--focus-screen-height, 480px) * var(--screen-aspect, .45))); }
+.canvas-workspace .focus-primary.landscape .screen-wrap { width: 100%; }
+.canvas-workspace .focus-thumbnail .screen-wrap { width: min(100%, calc(160px * var(--screen-aspect, .45))); }
+.canvas-workspace .focus-thumbnail.landscape .screen-wrap { width: 100%; }
+.canvas-workspace .stage[data-layout=focus] .device-head { cursor: pointer; }
 .canvas-workspace .screen-wrap { width: min(100%, calc(480px * var(--screen-aspect, .45))); }
 .canvas-workspace .landscape .screen-wrap { width: 100%; }
 .canvas-workspace .device-head { cursor: grab; touch-action: none; user-select: none; }

@@ -1,5 +1,5 @@
 /** Canvas coordinates are independent of DOM order, selection and device input. */
-export type CanvasLayout = "grid" | "split" | "stack";
+export type CanvasLayout = "focus" | "grid" | "split" | "stack";
 type Point = { x: number; y: number };
 type Item = { id: string; root: HTMLElement };
 const GRID = 24;
@@ -25,6 +25,13 @@ export class WorkspaceCanvas {
   private handButton: HTMLButtonElement;
   private saveTimer: number | undefined;
   private lifetime = new AbortController();
+  private layout: CanvasLayout | null = null;
+  private focusTarget: string | null = null;
+  private focusPositions = new Map<string, Point>();
+  private focusCamera: typeof this.camera | null = null;
+  private focusSignature = "";
+  private resize: ResizeObserver;
+  private observedItems = new Set<HTMLElement>();
 
   constructor(private host: HTMLElement, private world: HTMLElement, private storageKey: string,
     private onMove: () => void, private cancelInput: () => void, private onZoom: (zoom: number) => void) {
@@ -128,6 +135,10 @@ export class WorkspaceCanvas {
     }, { signal });
     window.addEventListener("blur", () => { this.space = false; this.finish(); }, { signal });
     window.addEventListener("pagehide", () => this.persist(), { signal });
+    this.resize = new ResizeObserver(() => {
+      if (this.enabled && this.layout === "focus") this.arrangeFocus();
+    });
+    this.resize.observe(host);
   }
 
   private isTyping(target: EventTarget | null): boolean {
@@ -144,7 +155,7 @@ export class WorkspaceCanvas {
     const root = target.closest<HTMLElement>(".device");
     const pan = this.hand || this.space || e.button === 1 || !root;
     if (target.closest(".workspace-empty")) return;
-    if (!pan && (!target.closest(".device-head") || target.closest("button, input, select, textarea"))) return;
+    if (!pan && (this.layout === "focus" || !target.closest(".device-head") || target.closest("button, input, select, textarea"))) return;
     const item = pan ? undefined : this.items.find(i => i.root === root);
     if (!pan && !item) return;
     e.preventDefault();
@@ -167,25 +178,44 @@ export class WorkspaceCanvas {
   }
 
   /** Only new devices receive automatic coordinates; polling never resets a workspace. */
-  sync(items: Item[], enabled: boolean): void {
+  sync(items: Item[], enabled: boolean, layout: CanvasLayout | null = null, target: string | null = null): void {
+    if (this.enabled !== enabled) this.focusSignature = "";
+    const roots = new Set(items.map(item => item.root));
+    for (const root of this.observedItems) if (!roots.has(root)) { this.resize.unobserve(root); this.observedItems.delete(root); }
+    for (const root of roots) if (!this.observedItems.has(root)) { this.resize.observe(root); this.observedItems.add(root); }
+    const enteringFocus = layout === "focus" && this.layout !== "focus";
+    if (enteringFocus) this.focusCamera = { ...this.camera };
+    if (layout !== "focus" && this.layout === "focus") {
+      if (this.focusCamera) this.camera = this.focusCamera;
+      this.focusCamera = null;
+      this.focusSignature = "";
+    }
+    this.layout = layout;
+    this.focusTarget = target;
     this.enabled = enabled;
     this.host.classList.toggle("canvas-workspace", enabled);
     this.controls.hidden = !enabled;
     this.items = items.filter(i => !i.root.hidden);
+    const primary = this.items.find(i => i.id === target) ?? this.items[0];
     for (const item of items) {
+      const focus = layout === "focus" && !item.root.hidden;
+      item.root.classList.toggle("focus-primary", focus && item === primary);
+      item.root.classList.toggle("focus-thumbnail", focus && item !== primary);
+      item.root.style.order = focus ? (item === primary ? "0" : "1") : "";
+      if (layout !== "focus" || !enabled) item.root.style.removeProperty("--focus-width");
       if (enabled && !this.positions.has(item.id)) {
         const right = Math.max(0, ...items.filter(i => i !== item && this.positions.has(i.id)).map(i => this.positions.get(i.id)!.x + (i.root.offsetWidth || parseFloat(getComputedStyle(i.root).width) || 336)));
         this.positions.set(item.id, { x: right ? Math.ceil((right + GRID) / GRID) * GRID : 0, y: 0 });
       }
-      if (enabled) this.place(item);
+      if (enabled) { if (layout !== "focus") this.place(item); }
       else { item.root.style.removeProperty("left"); item.root.style.removeProperty("top"); }
       const head = item.root.querySelector<HTMLElement>(".device-head")!;
       head.tabIndex = enabled ? 0 : -1;
-      head.title = enabled ? "Drag to move on the grid; use arrow keys to move, Shift for larger steps" : "";
+      head.title = enabled && layout !== "focus" ? "Drag to move on the grid; use arrow keys to move, Shift for larger steps" : "";
       if (!head.dataset.canvasBound) {
         head.dataset.canvasBound = "true";
         head.addEventListener("keydown", e => {
-          if (!this.enabled || e.target !== head || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) return;
+          if (!this.enabled || this.layout === "focus" || e.target !== head || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) return;
           e.preventDefault();
           e.stopPropagation();
           const p = this.positions.get(item.id)!;
@@ -200,6 +230,7 @@ export class WorkspaceCanvas {
     }
     if (!enabled) this.finish();
     this.render();
+    if (enabled && layout === "focus") this.arrangeFocus();
     if (enabled && !this.initialized && this.host.clientWidth && this.items.length) {
       this.initialized = true;
       if (!this.restored) this.fit();
@@ -208,6 +239,7 @@ export class WorkspaceCanvas {
 
   arrange(layout: CanvasLayout): void {
     if (!this.enabled || !this.items.length) return;
+    if (layout === "focus") { this.arrangeFocus(true); return; }
     const items = this.items;
     const columns = layout === "stack" ? 1 : layout === "split" ? items.length : Math.ceil(Math.sqrt(items.length));
     const columnWidths = Array.from({ length: columns }, (_, column) =>
@@ -223,6 +255,31 @@ export class WorkspaceCanvas {
     this.fit();
   }
 
+  /** Focus is a presentation of the visible devices, leaving saved grid coordinates intact. */
+  private arrangeFocus(force = false): void {
+    if (!this.items.length || !this.host.clientWidth) { this.focusSignature = ""; return; }
+    const primary = this.items.find(i => i.id === this.focusTarget) ?? this.items[0]!;
+    const ordered = [primary, ...this.items.filter(i => i !== primary)];
+    const width = Math.max(160, this.host.clientWidth - 48);
+    const sideBySide = width >= 600 && ordered.length > 1;
+    const thumbWidth = Math.min(220, width);
+    const primaryWidth = sideBySide ? width - thumbWidth - GRID : width;
+    const signature = JSON.stringify([ordered.map(i => [i.id, i.root.classList.contains("landscape"), i.root.querySelector<HTMLElement>(".screen-wrap")?.style.getPropertyValue("--screen-aspect"), i.root.offsetHeight]), width, this.host.clientHeight]);
+    if (!force && signature === this.focusSignature) return;
+    this.focusSignature = signature;
+    this.cancelInput();
+    this.host.style.setProperty("--focus-screen-height", `${Math.max(180, this.host.clientHeight - 220)}px`);
+    ordered.forEach((item, index) => item.root.style.setProperty("--focus-width", `${index ? thumbWidth : primaryWidth}px`));
+    this.focusPositions.set(primary.id, { x: 0, y: 0 });
+    let y = sideBySide ? 0 : Math.ceil((primary.root.offsetHeight + GRID) / GRID) * GRID;
+    for (const item of ordered.slice(1)) {
+      this.focusPositions.set(item.id, { x: sideBySide ? primaryWidth + GRID : Math.round((width - thumbWidth) / 2), y });
+      y += Math.ceil((item.root.offsetHeight + GRID) / GRID) * GRID;
+    }
+    for (const item of ordered) this.place(item);
+    this.fit();
+  }
+
   /** Enlarge only the requested device to the available workspace. */
   fill(id: string): void {
     const item = this.items.find(item => item.id === id);
@@ -231,10 +288,10 @@ export class WorkspaceCanvas {
 
   fit(items = this.items, maximumZoom = 1): void {
     if (!this.enabled || !items.length || !this.host.clientWidth) return;
-    const left = Math.min(...items.map(i => this.positions.get(i.id)!.x));
-    const top = Math.min(...items.map(i => this.positions.get(i.id)!.y));
-    const right = Math.max(...items.map(i => this.positions.get(i.id)!.x + (i.root.offsetWidth || parseFloat(getComputedStyle(i.root).width) || 336)));
-    const bottom = Math.max(...items.map(i => this.positions.get(i.id)!.y + i.root.offsetHeight));
+    const left = Math.min(...items.map(i => this.point(i).x));
+    const top = Math.min(...items.map(i => this.point(i).y));
+    const right = Math.max(...items.map(i => this.point(i).x + (i.root.offsetWidth || parseFloat(getComputedStyle(i.root).width) || 336)));
+    const bottom = Math.max(...items.map(i => this.point(i).y + i.root.offsetHeight));
     const width = this.host.clientWidth, height = this.host.clientHeight;
     const zoom = Math.max(MIN_ZOOM, Math.min(maximumZoom, (width - 48) / Math.max(1, right - left), (height - 104) / Math.max(1, bottom - top)));
     this.camera = { zoom, x: (width - (right - left) * zoom) / 2 - left * zoom,
@@ -260,9 +317,13 @@ export class WorkspaceCanvas {
   }
 
   private place(item: Item): void {
-    const p = this.positions.get(item.id)!;
+    const p = this.point(item);
     item.root.style.left = `${p.x}px`;
     item.root.style.top = `${p.y}px`;
+  }
+
+  private point(item: Item): Point {
+    return (this.layout === "focus" ? this.focusPositions.get(item.id) : undefined) ?? this.positions.get(item.id) ?? { x: 0, y: 0 };
   }
 
   private render(): void {
@@ -285,7 +346,7 @@ export class WorkspaceCanvas {
 
   private persist(): void {
     if (!this.initialized && !this.restored) return;
-    try { localStorage.setItem(this.storageKey, JSON.stringify({ version: 1, camera: this.camera, positions: [...this.positions] })); } catch {}
+    try { localStorage.setItem(this.storageKey, JSON.stringify({ version: 1, camera: this.focusCamera ?? this.camera, positions: [...this.positions] })); } catch {}
   }
 
   destroy(): void {
@@ -293,5 +354,6 @@ export class WorkspaceCanvas {
     clearTimeout(this.saveTimer);
     this.persist();
     this.lifetime.abort();
+    this.resize.disconnect();
   }
 }

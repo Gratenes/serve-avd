@@ -186,7 +186,7 @@ test('each device expand button fills the workspace with that device and Layout 
     await h.page.getByRole('button',{name:'Toggle remote',exact:true}).click();
     const cards = [h.page.locator('.device[data-device="phone"]'), h.page.locator('.device[data-device="tv"]')];
     const positions = await Promise.all(cards.map(position));
-    assert.deepEqual(await h.page.locator('.layout-picker button').allTextContents(),['Grid','Split','Stack']);
+    assert.deepEqual(await h.page.locator('.layout-picker button').allTextContents(),['Focus','Grid','Split','Stack']);
     const host = await h.page.locator('.workspace-stage').boundingBox();
     for (const [index, card] of cards.entries()) {
       await h.page.getByRole('button',{name:'Fit all devices',exact:true}).click();
