@@ -475,13 +475,15 @@ No native code, no device daemons: the npm package is plain Node + `adb`.
 ## Development
 
 ```sh
-npm install
+npm ci
 npm run build       # bundle CLI + middleware + browser client into dist/
 npm test            # unit tests (H.264 parser, XML/rotation/keymap parsers, find/wait, replay, MCP handler)
 npm run typecheck
 npx playwright install chromium  # one-time browser setup
 npm run test:browser             # builds client, tests UI + WebSocket commands with mock devices
 ```
+
+Browser tests use mock devices and WebSocket connections; they do not require ADB or a running emulator. Install Chromium once with `npx playwright install chromium`, then run `npm run test:browser` after client changes.
 
 ## Credit & License
 
