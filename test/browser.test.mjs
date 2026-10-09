@@ -180,8 +180,6 @@ test('workspace layouts, hiding every device and recovery keep selection valid',
   try {
     const devices = h.page.locator('.device:visible');
     assert.equal(await devices.count(),2);
-    await h.page.getByRole('button',{name:'Focus',exact:true}).click();
-    assert.equal(await h.page.getByRole('button',{name:'Focus',exact:true}).getAttribute('aria-pressed'),'true');
     await h.page.getByRole('button',{name:'Select Living Room TV',exact:true}).click();
     assert.equal(await h.page.locator('.device.selected-device').getAttribute('data-device'),'tv');
     await h.page.getByRole('button',{name:'Stack',exact:true}).click();
@@ -264,10 +262,11 @@ test('device discovery adds connected devices and removes disconnected devices w
 });
 
 
-test('Focus repaints a static full-resolution seed after enlarging a thumbnail', async () => {
+test('Filling the workspace repaints a static full-resolution seed after zooming in', async () => {
   const h = await harness({width:1440,height:1000}, 'auto');
   try {
-    await h.page.locator('.device[data-device="phone"]').getByRole('button', {name:'Focus this device',exact:true}).click();
+    await h.page.getByRole('button', {name:'Toggle remote',exact:true}).click();
+    for (let i = 0; i < 6; i++) await h.page.getByRole('button', {name:'Zoom out',exact:true}).click();
     const tv = h.page.locator('.device[data-device="tv"]');
     const canvas = tv.locator('canvas');
     const png = await h.page.evaluate(() => {
@@ -287,10 +286,10 @@ test('Focus repaints a static full-resolution seed after enlarging a thumbnail',
       return c.getContext('2d').getImageData(0, 0, 1, 1).data[0] === 255;
     });
     const small = await canvas.evaluate(c => ({width:c.width,height:c.height}));
-    await tv.getByRole('button', {name:'Focus this device',exact:true}).click();
+    await tv.getByRole('button', {name:'Fill screen with this device',exact:true}).click();
     await h.page.waitForTimeout(100);
     const large = await canvas.evaluate(c => ({width:c.width,height:c.height,shown:c.getBoundingClientRect().width}));
-    assert.ok(large.shown > small.width * 2, 'Focus substantially enlarges the preview');
+    assert.ok(large.shown > small.width * 2, 'Filling the workspace substantially enlarges the preview');
     assert.ok(large.width > small.width * 2, `Canvas must repaint at the enlarged size: ${JSON.stringify({small,large})}`);
     const colors = await canvas.evaluate(c => [...c.getContext('2d').getImageData(Math.floor(c.width * .75), 0, 1, 1).data]);
     assert.deepEqual(colors, [0,0,255,255], 'Repaint preserves the source image');
@@ -299,7 +298,7 @@ test('Focus repaints a static full-resolution seed after enlarging a thumbnail',
 });
 
 
-test('Focus repaints decoded frames and releases replaced or removed frame resources', async () => {
+test('Filling the workspace repaints decoded frames and releases replaced or removed frame resources', async () => {
   const h = await harness({width:1440,height:1000}, 'auto');
   try {
     // Drive the production decoder-output path with real VideoFrame resources,
@@ -324,7 +323,8 @@ test('Focus repaints decoded frames and releases replaced or removed frame resou
       };
     });
     await h.page.reload();
-    await h.page.locator('.device[data-device="phone"]').getByRole('button', {name:'Focus this device',exact:true}).click();
+    await h.page.getByRole('button', {name:'Toggle remote',exact:true}).click();
+    for (let i = 0; i < 6; i++) await h.page.getByRole('button', {name:'Zoom out',exact:true}).click();
     const tv = h.page.locator('.device[data-device="tv"]');
     const canvas = tv.locator('canvas');
     const send = (tag, bytes) => {
@@ -338,7 +338,7 @@ test('Focus repaints decoded frames and releases replaced or removed frame resou
       return c.getContext('2d').getImageData(0,0,1,1).data[1] === 255;
     });
     const small = await canvas.evaluate(c => c.width);
-    await tv.getByRole('button', {name:'Focus this device',exact:true}).click();
+    await tv.getByRole('button', {name:'Fill screen with this device',exact:true}).click();
     await h.page.waitForFunction(width => document.querySelector('.device[data-device="tv"] canvas').width > width * 2, small);
     assert.deepEqual(await h.page.evaluate(() => window.closedFrames), [false]);
     send(3, [2]);
@@ -381,7 +381,7 @@ test('card selection and device dropdown focus the emulator without stealing for
     await h.page.keyboard.type(' here');
     assert.equal(await tv.locator('textarea').inputValue(),'keep this focus here');
     assert.equal(h.messages.length,0);
-    await tv.getByRole('button',{name:'Focus this device',exact:true}).click();
+    await tv.getByRole('button',{name:'Fill screen with this device',exact:true}).click();
     assert.equal(await tv.locator('.screen-wrap').evaluate(el=>el===document.activeElement),true);
   } finally {await h.close();}
 });

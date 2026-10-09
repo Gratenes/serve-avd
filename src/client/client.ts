@@ -6,6 +6,7 @@
 import { AvccDemuxer, avcCodecString, isAvccSupported } from "./avcc-codec";
 import { icons, type IconName } from "./icons";
 import { WorkspaceRemote } from "./remote-controls";
+import { WorkspaceCanvas, type CanvasLayout } from "./workspace-canvas";
 import { workspaceIcons } from "./workspace-icons";
 
 declare const __SERVE_AVD_VERSION__: string | undefined;
@@ -259,6 +260,7 @@ class DeviceView {
   private readonly resizeObserver: ResizeObserver;
   private renderWidth = 0;
   private renderHeight = 0;
+  private displayScale = 1;
   private img: HTMLImageElement | null = null;
   private readonly statusChip: HTMLElement;
   private readonly fpsChip: HTMLElement;
@@ -348,7 +350,7 @@ class DeviceView {
     const actions = el("div", { class: "device-head-actions" },
       iconButton("camera", "Screenshot", () => window.open(this.entry.screenshotEndpoint, "_blank")),
       iconButton("rotateCcw", "Rotate", () => this.rotateStep(1)),
-      workspaceButton("expand", "Focus this device", () => this.root.dispatchEvent(new Event("devicefocus"))),
+      workspaceButton("expand", "Fill screen with this device", () => this.root.dispatchEvent(new Event("devicefill"))),
       workspaceButton("close", "Hide from workspace", () => this.root.dispatchEvent(new Event("devicehide"))));
     this.root.querySelector(".device-head")!.append(actions);
 
@@ -811,11 +813,18 @@ class DeviceView {
     this.ctx.drawImage(frame.source, 0, 0, raster.width, raster.height);
   }
 
+  /** CSS transforms do not trigger ResizeObserver; zoom still needs a fresh raster. */
+  setDisplayScale(scale: number): void {
+    if (this.displayScale === scale) return;
+    this.displayScale = scale;
+    if (!this.closed && !this.suspended && this.retainedFrame) this.paintRetainedFrame();
+  }
+
   private rasterSize(sourceWidth: number, sourceHeight: number): { width: number; height: number } {
     if (!(this.renderWidth > 0 && this.renderHeight > 0)) {
       return { width: sourceWidth, height: sourceHeight };
     }
-    const scale = Math.min(1, this.renderWidth / sourceWidth, this.renderHeight / sourceHeight);
+    const scale = Math.min(1, this.renderWidth * this.displayScale / sourceWidth, this.renderHeight * this.displayScale / sourceHeight);
     return {
       width: Math.max(1, Math.round(sourceWidth * scale)),
       height: Math.max(1, Math.round(sourceHeight * scale)),
@@ -1677,18 +1686,18 @@ async function main(): Promise<void> {
     return;
   }
 
-  type Layout = "focus" | "split" | "stack";
+  type Layout = CanvasLayout;
   const mobile = matchMedia("(max-width: 700px), (pointer: coarse) and (max-height: 500px)");
   const views: DeviceView[] = [];
   const hidden = new Set<string>();
   window.addEventListener("auth-expired", () => { for (const view of views) view.destroy(); panes?.close(); });
   let activeDeviceId: string | null = api.devices[0]?.device ?? null;
-  let layout: Layout = "split";
+  let layout: Layout | null = null;
   let mirror = false;
   let showRail = !mobile.matches;
   let showRemote = true;
   let panes: Panes | null = null;
-  const stage = el("div", { class: "stage", "data-layout": layout });
+  const stage = el("div", { class: "stage", "data-layout": "custom" });
   const stageHost = el("main", { class: "workspace-stage", "aria-label": "Device workspace" }, stage);
   const selector = el("select", { class: "select device-selector", "aria-label": "Selected device" });
   const count = el("span", { class: "rail-count" });
@@ -1723,9 +1732,9 @@ async function main(): Promise<void> {
   mirrorButton.setAttribute("role", "switch");
   const layouts = el("div", { class: "layout-picker", role: "group", "aria-label": "Device layout" });
   const layoutButtons = new Map<Layout, HTMLButtonElement>();
-  for (const name of ["focus", "split", "stack"] as const) {
+  for (const name of ["grid", "split", "stack"] as const) {
     const label = name[0]!.toUpperCase() + name.slice(1);
-    const b = button(`${workspaceIcons[name]}<span>${label}</span>`, `${label} layout`, () => { layout = name; update(); });
+    const b = button(`${workspaceIcons[name === "grid" ? "split" : name]}<span>${label}</span>`, `${label} arrangement on the canvas`, () => { layout = name; update(); canvas.arrange(name); });
     b.setAttribute("aria-label", label);
     layoutButtons.set(name, b);
     layouts.append(b);
@@ -1750,7 +1759,12 @@ async function main(): Promise<void> {
   }
   const railNodes = new Map<string, { row: HTMLElement; select: HTMLButtonElement; eye: HTMLButtonElement; meta: HTMLElement }>();
   const empty = el("div", { class: "empty workspace-empty" });
-  stage.append(empty);
+  stageHost.append(empty);
+  const canvas = new WorkspaceCanvas(stageHost, stage, `serve-avd:canvas:${BOOT.basePath}:${account?.id ?? "local"}`,
+    () => { layout = null; layoutButtons.forEach(b => b.setAttribute("aria-pressed", "false")); },
+    () => { for (const view of views) view.cancelInteraction(); },
+    zoom => { for (const view of views) view.setDisplayScale(zoom); });
+  window.addEventListener("auth-expired", () => canvas.destroy());
 
   const updateRemote = () => {
     const selected = views.find(v => v.entry.device === activeDeviceId);
@@ -1772,7 +1786,7 @@ async function main(): Promise<void> {
     remoteToggle.setAttribute("aria-pressed", String(showRemote));
     inspectorToggle.setAttribute("aria-pressed", String(panes?.visible ?? false));
     mirrorButton.setAttribute("aria-checked", String(mirror));
-    stage.dataset.layout = layout;
+    stage.dataset.layout = layout ?? "custom";
     stage.classList.toggle("mirroring", mirror);
     layoutButtons.forEach((b, name) => b.setAttribute("aria-pressed", String(name === layout)));
     const shown = visibleViews();
@@ -1787,14 +1801,11 @@ async function main(): Promise<void> {
           else { showRail = true; update(); }
         }));
     }
-    const focusOrder = [views.find(v => v.entry.device === activeDeviceId), ...views.filter(v => v.entry.device !== activeDeviceId)].filter(Boolean);
-    for (const [index, view] of views.entries()) {
+    for (const view of views) {
       const id = view.entry.device;
       const active = id === activeDeviceId;
       view.root.classList.toggle("selected-device", active);
-      view.root.classList.toggle("focus-thumbnail", layout === "focus" && !active && !mobile.matches);
       view.root.hidden = !shown.includes(view);
-      view.root.style.order = String(layout === "focus" ? focusOrder.indexOf(view) : index);
       view.setSuspended(document.hidden || !shown.includes(view));
       const nodes = railNodes.get(id)!;
       nodes.row.classList.toggle("selected", active);
@@ -1805,6 +1816,7 @@ async function main(): Promise<void> {
       nodes.eye.setAttribute("aria-pressed", String(!hidden.has(id)));
       nodes.eye.innerHTML = hidden.has(id) ? workspaceIcons.eyeOff : workspaceIcons.eye;
     }
+    canvas.sync(views.map(v => ({ id: v.entry.device, root: v.root })), !mobile.matches);
     remote.setVisible(showRemote);
     updateRemote();
   }
@@ -1816,6 +1828,7 @@ async function main(): Promise<void> {
     activeDeviceId = id;
     update();
     if (changed) panes?.refreshTarget();
+    if (focusInput) canvas.reveal(id);
     if (focusInput) views.find(v => v.entry.device === id)?.root.querySelector<HTMLElement>(".screen-wrap")?.focus({ preventScroll: true });
   }
   const toggleDevice = (id: string) => {
@@ -1845,7 +1858,7 @@ async function main(): Promise<void> {
       el("span", { class: "rail-name" }, el("span", { class: "status-dot" }), el("strong", { text: entry.name })));
     const meta = el("span", { class: "rail-meta" });
     select.append(meta);
-    select.addEventListener("click", () => { selectDevice(entry.device); if (mobile.matches) { showRail = false; update(); } });
+    select.addEventListener("click", () => { selectDevice(entry.device); canvas.fit([{ id: entry.device, root: view.root }]); if (mobile.matches) { showRail = false; update(); } });
     const eye = workspaceButton("eye", `Hide ${entry.name}`, () => toggleDevice(entry.device));
     eye.classList.add("rail-eye");
     eye.setAttribute("aria-pressed", "true");
@@ -1873,7 +1886,8 @@ async function main(): Promise<void> {
     });
     view.root.addEventListener("focusin", () => selectDevice(entry.device, false));
     view.root.addEventListener("devicechange", updateRemote);
-    view.root.addEventListener("devicefocus", () => { layout = layout === "focus" && activeDeviceId === entry.device ? "split" : "focus"; selectDevice(entry.device); });
+    view.root.addEventListener("canvasselect", event => selectDevice(entry.device, (event as CustomEvent<boolean>).detail));
+    view.root.addEventListener("devicefill", () => { selectDevice(entry.device); canvas.fill(entry.device); });
     view.root.addEventListener("devicehide", () => toggleDevice(entry.device));
   };
   api.devices.forEach(addView);
