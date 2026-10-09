@@ -211,3 +211,43 @@
     padding: 8px;
   }
 }
+.workspace-drawer {
+  flex-shrink: 0;
+  border-top: 1px solid #262a2f;
+  background: #121417;
+  z-index: 13;
+}
+.workspace-drawer-bar {
+  height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+}
+.workspace-drawer-bar button[aria-pressed="true"] {
+  background: #2e3339;
+  color: #eceef0;
+}
+.workspace-drawer-body {
+  max-height: 35vh;
+  overflow: auto;
+  padding: 8px 12px;
+}
+.workspace-drawer-body > .observer-panel {
+  border: 0;
+  padding: 4px;
+}
+.drawer-notice {
+  color: #a3a9b0;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.workspace-drawer [hidden] {
+  display: none !important;
+}
+.workspace-drawer [role="status"]:empty {
+  display: none;
+}

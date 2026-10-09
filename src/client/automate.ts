@@ -33,6 +33,8 @@ interface PresetValues {
   fontScale?: number;
   talkback?: boolean;
   highContrast?: boolean;
+  battery?: { level?: number; plugged?: string };
+  unavailable?: string[];
 }
 interface SavedPreset extends PresetValues {
   id: string;
@@ -213,12 +215,15 @@ export class WorkspaceAutomate {
     }
     this.render();
   }
-  saveFromTimeline(steps: MacroStep[]): void {
+  saveFromTimeline(
+    steps: MacroStep[],
+    name = `Activity ${new Date().toLocaleString()}`,
+  ): void {
     try {
       validateMacroSteps(steps);
       const macro: Macro = {
         id: crypto.randomUUID(),
-        name: `Activity ${new Date().toLocaleString()}`,
+        name,
         steps,
         uses: 0,
       };
@@ -447,9 +452,11 @@ export class WorkspaceAutomate {
           ? [this.device]
           : [];
       this.runningTargets = targets.slice();
-      const runSteps = single
-        ? [macro.steps[this.stepIndex % macro.steps.length]!]
-        : macro.steps;
+      const runSteps = structuredClone(
+        single
+          ? [macro.steps[this.stepIndex % macro.steps.length]!]
+          : macro.steps,
+      );
       try {
         this.flash(`Running ${macro.name}…`);
         await this.runner.run(
@@ -519,6 +526,7 @@ export class WorkspaceAutomate {
             );
             return;
           }
+          this.flash(`Saving ${value}…`);
           void deviceAction(device, "snapshot", {
             op: "save",
             name: `snapshot-${crypto.randomUUID()}`,
@@ -535,6 +543,9 @@ export class WorkspaceAutomate {
     );
     this.root.append(panel);
     const run = async (op: string, tag: string) => {
+      this.flash(
+        `${op === "load" ? "Restoring" : op === "save" ? "Saving" : "Deleting"} ${tag}…`,
+      );
       try {
         await deviceAction(device, "snapshot", { op, name: tag });
         this.flash(`${op} ${tag} completed`);
@@ -670,6 +681,19 @@ export class WorkspaceAutomate {
     airplane.type = "checkbox";
     const airplaneLabel = node("label", "Airplane");
     airplaneLabel.prepend(airplane);
+    const talkback = choose(
+      "Preset TalkBack",
+      ["Unchanged", "On", "Off"],
+      "Unchanged",
+    );
+    const contrast = choose(
+      "Preset high contrast",
+      ["Unchanged", "On", "Off"],
+      "Unchanged",
+    );
+    const battery = field("Battery level (optional)", "", "number");
+    battery.min = "0";
+    battery.max = "100";
     const save = () => {
       const scale = Number(font.value),
         latitude = Number(lat.value),
@@ -694,7 +718,25 @@ export class WorkspaceAutomate {
         this.flash("Enter valid latitude and longitude.", true);
         return;
       }
+      if (
+        battery.value &&
+        (!Number.isFinite(Number(battery.value)) ||
+          Number(battery.value) < 0 ||
+          Number(battery.value) > 100)
+      ) {
+        this.flash("Battery level must be 0–100.", true);
+        return;
+      }
       this.presets.push({
+        ...(talkback.value !== "Unchanged"
+          ? { talkback: talkback.value === "On" }
+          : {}),
+        ...(contrast.value !== "Unchanged"
+          ? { highContrast: contrast.value === "On" }
+          : {}),
+        ...(battery.value
+          ? { battery: { level: Number(battery.value), plugged: "none" } }
+          : {}),
         id: crypto.randomUUID(),
         name: name.value.trim(),
         locale: locale.value.trim(),
@@ -719,6 +761,8 @@ export class WorkspaceAutomate {
       locale,
       font,
       row(lat, lon),
+      row(talkback, contrast),
+      battery,
       control("Save preset", save),
     );
     panel.append(
@@ -726,7 +770,9 @@ export class WorkspaceAutomate {
       control("Save current as preset", () => {
         void request<PresetValues>(`${helperBase(device)}/preset-current`)
           .then((current) => {
-            const name = prompt("Preset name");
+            const name = prompt(
+              `Preset name${current.unavailable?.length ? "\nUnavailable fields will be omitted: " + current.unavailable.join("; ") : ""}`,
+            );
             if (!name?.trim()) return;
             this.presets.push({
               ...current,
@@ -754,6 +800,7 @@ export class WorkspaceAutomate {
         const outcomes: string[] = [];
         let failed = false;
         for (const target of targets) {
+          this.activePreset.delete(target.entry.device);
           try {
             if (preset.network) {
               const network = { ...preset.network };
@@ -776,6 +823,8 @@ export class WorkspaceAutomate {
               await deviceAction(target, "high-contrast", {
                 enabled: preset.highContrast,
               });
+            if (preset.battery)
+              await deviceAction(target, "battery", preset.battery);
             let localeNote = "";
             if (preset.locale) {
               const result = await deviceAction<{

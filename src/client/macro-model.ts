@@ -71,7 +71,7 @@ export function validateMacroSteps(steps: MacroStep[]): void {
       throw new Error("Step delay must be 0–60000 ms.");
     if (
       step.kind === "KEY" &&
-      !(step.value in BUTTONS) &&
+      !Object.hasOwn(BUTTONS, step.value) &&
       androidKeycodeForBrowserCode(step.value) == null
     )
       throw new Error(`Unknown key ${step.value}.`);
@@ -98,6 +98,35 @@ export function validateMacroSteps(steps: MacroStep[]): void {
         typeof step.body !== "object")
     )
       throw new Error("Invalid recorded input payload.");
+    if (step.kind === "INPUT") {
+      const body = step.body!;
+      const coordinates =
+        step.tag === 5 ? ["x1", "y1", "x2", "y2"] : ["x", "y"];
+      if (
+        coordinates.some(
+          (key) =>
+            typeof body[key] !== "number" ||
+            !Number.isFinite(body[key]) ||
+            Number(body[key]) < 0 ||
+            Number(body[key]) > 1,
+        )
+      )
+        throw new Error(
+          "Recorded input coordinates must be normalized from 0 to 1.",
+        );
+      if (
+        [3, 5].includes(step.tag!) &&
+        !["begin", "move", "end"].includes(String(body.type))
+      )
+        throw new Error("Invalid gesture phase.");
+      if (
+        step.tag === 11 &&
+        ["dx", "dy"].some(
+          (key) => typeof body[key] !== "number" || !Number.isFinite(body[key]),
+        )
+      )
+        throw new Error("Invalid scroll delta.");
+    }
   }
 }
 export class MacroRunner {
@@ -123,6 +152,10 @@ export class MacroRunner {
       throw new Error("Repeat must be between 1 and 100.");
     const abort = (this.abort = new AbortController());
     const baseline = new Map<string, Set<string>>();
+    const heldGestures = new Map<
+      FeatureDevice,
+      { tag: number; body: Record<string, unknown> }
+    >();
     let monitor: ReturnType<typeof setTimeout> | undefined;
     let monitorRequest: Promise<void> | null = null;
     const checkCrashes = async (initial = false) => {
@@ -182,8 +215,8 @@ export class MacroRunner {
                   case "KEY":
                     await deviceAction(
                       target,
-                      step.value in BUTTONS ? "button" : "key",
-                      step.value in BUTTONS
+                      Object.hasOwn(BUTTONS, step.value) ? "button" : "key",
+                      Object.hasOwn(BUTTONS, step.value)
                         ? { button: step.value }
                         : { code: step.value },
                       abort.signal,
@@ -229,6 +262,15 @@ export class MacroRunner {
                   case "INPUT":
                     if (!target.sendInput(step.tag!, step.body!))
                       throw new Error("Macro input target disconnected.");
+                    if ([3, 5].includes(step.tag!)) {
+                      if (step.body!.type === "end")
+                        heldGestures.delete(target);
+                      else
+                        heldGestures.set(target, {
+                          tag: step.tag!,
+                          body: step.body!,
+                        });
+                    }
                     break;
                 }
               } catch (error) {
@@ -248,6 +290,8 @@ export class MacroRunner {
       throw abort.signal.aborted ? (abort.signal.reason ?? error) : error;
     } finally {
       if (monitor) clearTimeout(monitor);
+      for (const [target, gesture] of heldGestures)
+        target.sendInput(gesture.tag, { ...gesture.body, type: "end" });
       abort.abort();
       if (this.abort === abort) this.abort = null;
     }

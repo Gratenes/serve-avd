@@ -109,6 +109,11 @@ export class WorkspaceApps {
     this.selected = device;
     void this.render();
   }
+  refreshDevice(serial: string): void {
+    if (this.selected?.entry.device === serial && this.root.isConnected)
+      void this.render();
+  }
+
   private async installFiles(
     files: File[],
     targets: FeatureDevice[],
@@ -323,6 +328,7 @@ export class WorkspaceApps {
             } else
               await deviceAction(device, action, { package: app.packageName });
             this.status(`${action} completed`);
+            void this.updateBadge(device);
           } catch (error) {
             this.status(errorText(error), true);
           }

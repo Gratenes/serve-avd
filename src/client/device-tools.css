@@ -1,0 +1,188 @@
+.device-footer {
+  position: relative;
+  border-top: 1px solid #262a2f;
+  padding: 6px 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-height: 26px;
+}
+.device-focus-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+.device-focus-box {
+  position: absolute;
+  box-sizing: border-box;
+  border: 2px solid #6ee7b7;
+  box-shadow: 0 0 0 3px #6ee7b730;
+  border-radius: 4px;
+}
+.device-focus-box.trail {
+  border: 1px dashed #6ee7b7;
+  box-shadow: none;
+  background: #6ee7b711;
+  opacity: 0.45;
+  font:
+    12px "IBM Plex Mono",
+    monospace;
+  color: #6ee7b7;
+  padding: 2px;
+}
+.device-focus-info {
+  position: absolute;
+  bottom: 5px;
+  left: 5px;
+  max-width: calc(100% - 10px);
+  padding: 5px 8px;
+  color: #c9ced3;
+  background: #0d0e10e8;
+  border: 1px solid #2f5a47;
+  border-radius: 5px;
+  font:
+    10px "IBM Plex Mono",
+    monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.device-focus-info.warning {
+  color: #f5b544;
+  border-color: #5a4520;
+}
+.device-focus-options {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  z-index: 4;
+  display: flex;
+  gap: 4px;
+}
+.device-focus-options .btn {
+  font-size: 9px;
+  padding: 3px 5px;
+}
+.device-focus-options button[aria-pressed="true"] {
+  color: #6ee7b7;
+  background: #22352c;
+  border-color: #2f5a47;
+}
+.device-quality-panel {
+  position: absolute;
+  bottom: 35px;
+  right: 8px;
+  z-index: 12;
+  width: 250px;
+  max-width: calc(100% - 16px);
+  padding: 12px;
+  background: #17191c;
+  border: 1px solid #33383f;
+  border-radius: 10px;
+  box-shadow: 0 10px 30px #0008;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  color: #eceef0;
+  font-size: 12px;
+}
+.device-quality-panel small {
+  color: #7c838b;
+  font-size: 10px;
+}
+.device-quality-panel label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.device-quality-toggle {
+  font:
+    10px "IBM Plex Mono",
+    monospace;
+  margin-left: auto;
+}
+.device-performance {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex: 1;
+}
+.device-metric {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: #a3a9b0;
+  font:
+    9px "IBM Plex Mono",
+    monospace;
+}
+.device-metric svg {
+  width: 34px;
+  height: 14px;
+}
+.device-performance-detail {
+  font-size: 10px;
+  color: #7c838b;
+}
+.device-performance-detail[open] > div {
+  position: absolute;
+  bottom: 35px;
+  left: 8px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: #17191c;
+  border: 1px solid #33383f;
+  border-radius: 10px;
+  max-width: 350px;
+  z-index: 10;
+  font:
+    11px "IBM Plex Mono",
+    monospace;
+}
+.device-performance-detail summary {
+  cursor: pointer;
+}
+.device-focus-layer[hidden],
+.device-focus-options[hidden],
+.device-quality-panel[hidden],
+.device-focus-info[hidden] {
+  display: none;
+}
+.device-focus-overlay-toggle[aria-pressed="true"] {
+  color: #6ee7b7;
+  border-color: #2f5a47;
+}
+.device-focus-layer .unavailable,
+.device-performance.unavailable {
+  color: #f5b544;
+}
+@media (max-width: 700px) {
+  .device-metric svg {
+    display: none;
+  }
+  .device-performance {
+    gap: 5px;
+  }
+  .device-quality-panel {
+    width: 210px;
+  }
+  .device-focus-options {
+    top: 4px;
+    right: 4px;
+  }
+  .device-focus-options button {
+    font-size: 8px;
+  }
+}
+.device-head-actions .device-focus-overlay-toggle {
+  width: 24px;
+  min-width: 24px;
+  padding: 0;
+  font-size: 16px;
+  line-height: 1;
+  flex-shrink: 0;
+}

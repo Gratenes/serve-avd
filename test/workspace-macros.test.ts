@@ -99,3 +99,38 @@ test("macro validation rejects malformed steps before requests and stops on a cr
     globalThis.fetch = original;
   }
 });
+test("stopping a recorded gesture releases the touch instead of leaving Android held down", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const device = {
+    entry: { device: "tv", name: "TV", actionEndpoint: "/tv/action" },
+    connected: true,
+    sendInput: (_tag: number, body: Record<string, unknown>) => {
+      sent.push(body);
+      return true;
+    },
+  } as never;
+  const runner = new MacroRunner();
+  const running = runner.run(
+    [
+      {
+        kind: "INPUT",
+        value: "touch",
+        tag: 3,
+        body: { type: "begin", x: 0.5, y: 0.5 },
+        waitMs: 0,
+      },
+      { kind: "WAIT", value: "10000", waitMs: 0 },
+    ],
+    [device],
+    1,
+    false,
+    () => {},
+  );
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  runner.stop();
+  await assert.rejects(running, /stopped/);
+  assert.deepEqual(
+    sent.map((item) => item.type),
+    ["begin", "end"],
+  );
+});

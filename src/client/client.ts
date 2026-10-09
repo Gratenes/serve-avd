@@ -11,6 +11,9 @@ import { workspaceIcons } from "./workspace-icons";
 import { WorkspaceLogcat, createLogcatState } from "./logcat";
 import { WorkspaceApps } from "./apps";
 import { WorkspaceAutomate } from "./automate";
+import { DeviceTools } from "./device-tools";
+import { WorkspaceObservability } from "./workspace-observability";
+import type { StreamQuality } from "../workspace-types";
 
 declare const __SERVE_AVD_VERSION__: string | undefined;
 
@@ -299,6 +302,9 @@ class DeviceView {
   /** Wall-clock submit time per frame timestamp, for the decode-latency readout. */
   private readonly submittedAt = new Map<number, number>();
   private decodeLatencyMs = 0;
+  private streamQuality: StreamQuality | null = null;
+  private streamBytes = 0;
+  private browserStats = { decodeLatencyMs: 0, decodedFps: 0, renderedFps: 0, droppedFraction: 0, streamMbps: 0 };
   private backlogDrops = 0;
   private firstFrameSeen = false;
   private mode: "h264" | "mjpeg" = "mjpeg";
@@ -353,7 +359,7 @@ class DeviceView {
     const focus = workspaceButton("focus", "Focus this device", () => this.root.dispatchEvent(new Event("devicefocus")));
     focus.classList.add("device-focus");
     const actions = el("div", { class: "device-head-actions" },
-      iconButton("camera", "Screenshot", () => window.open(this.entry.screenshotEndpoint, "_blank")),
+      iconButton("camera", "Screenshot", () => this.root.dispatchEvent(new Event("devicescreenshot"))),
       iconButton("rotateCcw", "Rotate", () => this.rotateStep(1)),
       workspaceButton("expand", "Fill screen with this device", () => this.root.dispatchEvent(new Event("devicefill"))),
       focus,
@@ -427,7 +433,7 @@ class DeviceView {
       iconButton("volumeUp", "Volume up", () => this.sendButton("volume-up")),
       iconButton("power", "Power", () => this.sendButton("power")),
       iconButton("moon", "Toggle light/dark theme", () => this.toggleTheme()),
-      iconButton("camera", "Save screenshot", () => window.open(this.entry.screenshotEndpoint, "_blank")),
+      iconButton("camera", "Save screenshot", () => this.root.dispatchEvent(new Event("devicescreenshot"))),
     );
 
     const textPanel = el("details", { class: "text-entry" });
@@ -510,6 +516,25 @@ class DeviceView {
     return `${this.statusChip.textContent} · ${this.fpsChip.textContent}`;
   }
 
+  get featureScreenSize(): { width: number; height: number } { return { width: this.config.width, height: this.config.height }; }
+
+  get featureBrowserMetrics() { return { ...this.browserStats, codec: this.mode }; }
+
+  setStreamQuality(quality: StreamQuality): void {
+    if (JSON.stringify(this.streamQuality) === JSON.stringify(quality)) return;
+    this.streamQuality = quality;
+    if (this.mode === "h264") { this.awaitingSince = 0; this.streamAbort?.abort(); }
+  }
+
+  private avccEndpoint(): string {
+    if (!this.streamQuality) return this.entry.streamAvccEndpoint;
+    const url = new URL(this.entry.streamAvccEndpoint, location.href);
+    url.searchParams.set("resolution", this.streamQuality.resolution);
+    url.searchParams.set("fps", String(this.streamQuality.fps));
+    url.searchParams.set("bitRateMbps", String(this.streamQuality.bitRateMbps));
+    return url.pathname + url.search;
+  }
+
   sendInput(tag: number, body: Record<string, unknown>): boolean { return this.send(tag, body); }
 
   sendButton(name: string): void {
@@ -578,7 +603,8 @@ class DeviceView {
     const frame = new Uint8Array(1 + json.length);
     frame[0] = tag;
     frame.set(json, 1);
-    if (this.closed || this.suspended || authExpired) return false;
+    const release = [3, 5].includes(tag) && body && typeof body === "object" && (body as {type?:unknown}).type === "end";
+    if (this.closed || (this.suspended && !release) || authExpired) return false;
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(frame);
       if (body && [3, 4, 5, 6, 11, 13].includes(tag)) this.root.dispatchEvent(new CustomEvent("deviceinput", { detail: { tag, body } }));
@@ -631,7 +657,7 @@ class DeviceView {
       }
       try {
         this.streamAbort = new AbortController();
-        const response = await fetch(this.entry.streamAvccEndpoint, { signal: this.streamAbort.signal });
+        const response = await fetch(this.avccEndpoint(), { signal: this.streamAbort.signal });
         if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
         this.setStatus("H.264", true);
         backoff = 500;
@@ -641,6 +667,7 @@ class DeviceView {
           const { done, value } = await reader.read();
           if (done) break;
           if (!value) continue;
+          this.streamBytes += value.byteLength;
           for (const chunk of demuxer.push(value)) this.onAvccChunk(chunk.type, chunk.payload);
         }
       } catch {
@@ -863,12 +890,20 @@ class DeviceView {
 
   private startFpsLoop(): void {
     let lastCount = 0;
+    let lastDecoded = 0;
+    let lastBytes = 0;
+    let lastDrops = 0;
     const tick = () => {
       if (this.closed) return;
       if (this.img) this.noteFrameSize(this.img.naturalWidth, this.img.naturalHeight);
       if (this.mode === "h264" && !this.suspended) {
         const fps = this.framesPresented - lastCount;
         lastCount = this.framesPresented;
+        const decoded = this.framesDecoded - lastDecoded;
+        const drops = this.presentationDrops - lastDrops;
+        this.browserStats = { decodeLatencyMs: this.decodeLatencyMs, decodedFps: decoded, renderedFps: fps,
+          droppedFraction: decoded > 0 ? drops / decoded : 0, streamMbps: (this.streamBytes - lastBytes) * 8 / 1_000_000 };
+        lastDecoded = this.framesDecoded; lastBytes = this.streamBytes; lastDrops = this.presentationDrops;
         this.fpsChip.textContent = `${fps} fps`;
         // Pipeline health on hover: decode latency, queue depth, catch-ups.
         const queued = this.decoder?.decodeQueueSize ?? 0;
@@ -1464,7 +1499,7 @@ class Panes {
     quickAction("Lock", actionIcon('<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/>'), "button", { button: "lock" });
     quickAction("Notifications", actionIcon('<path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/>'), "button", { button: "notifications" });
     quickAction("Quick settings", actionIcon('<path d="M4 7h16M4 17h16"/><circle cx="8" cy="7" r="3"/><circle cx="16" cy="17" r="3"/>'), "button", { button: "quick-settings" });
-    const screenshot = button(`${icons.camera}<span>Screenshot</span>`, "Screenshot", () => window.open(view.entry.screenshotEndpoint, "_blank"));
+    const screenshot = button(`${icons.camera}<span>Screenshot</span>`, "Screenshot", () => view.root.dispatchEvent(new Event("devicescreenshot")));
     screenshot.classList.add("inspector-quick-action"); quick.append(screenshot);
     quickAction("Low memory", actionIcon('<rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4m6-4v4M9 18v4m6-4v4M2 9h4m-4 6h4m12-6h4m-4 6h4"/>'), "memory-warning", {});
     section("Quick actions", quick);
@@ -1710,11 +1745,50 @@ async function main(): Promise<void> {
     const index = shown.findIndex(v => v.entry.device === activeDeviceId);
     if (shown.length) selectDevice(shown[(index + 1) % shown.length]!.entry.device);
   });
-  const apps = new WorkspaceApps(visibleViews, () => ({ csrfToken, expired: authExpired }), expireAuthentication);
-  const automate = new WorkspaceAutomate(`serve-avd:features:${BOOT.basePath}:${account?.id ?? "local"}`, visibleViews,
+  const capturesRoot = el("div", { class: "workspace-captures-root", hidden: "" });
+  const activityRoot = el("div", { class: "workspace-activity-root", hidden: "" });
+  const drawerNotice = el("span", { class: "drawer-notice", role: "status" });
+  let drawerTab: "activity" | "captures" = "activity";
+  let drawerOpen = false;
+  const drawerBody = el("div", { class: "workspace-drawer-body", hidden: "" }, activityRoot, capturesRoot);
+  const drawerToggle = button("⌃", "Expand activity and captures", () => { drawerOpen = !drawerOpen; updateDrawer(); }, "small");
+  drawerToggle.setAttribute("aria-label", "Expand activity and captures");
+  const activityButton = button("Activity", "Open activity timeline", () => openDrawer("activity"), "small");
+  const capturesButton = button("Captures", "Open captures", () => openDrawer("captures"), "small");
+  const drawer = el("section", { class: "workspace-drawer", "aria-label": "Activity and captures" },
+    el("div", { class: "workspace-drawer-bar" }, drawerToggle, activityButton, capturesButton, drawerNotice), drawerBody);
+  function updateDrawer(): void {
+    drawerBody.hidden = !drawerOpen;
+    activityRoot.hidden = drawerTab !== "activity";
+    capturesRoot.hidden = drawerTab !== "captures";
+    drawerToggle.textContent = drawerOpen ? "⌄" : "⌃";
+    drawerToggle.setAttribute("aria-expanded", String(drawerOpen));
+    drawerToggle.setAttribute("aria-label", drawerOpen ? "Collapse activity and captures" : "Expand activity and captures");
+    activityButton.setAttribute("aria-pressed", String(drawerOpen && drawerTab === "activity"));
+    capturesButton.setAttribute("aria-pressed", String(drawerOpen && drawerTab === "captures"));
+  }
+  function openDrawer(tab: "activity" | "captures"): void { drawerTab = tab; drawerOpen = true; updateDrawer(); }
+  const tools = new Map<string, DeviceTools>();
+  const apps = new WorkspaceApps(() => visibleViews().filter(view => view.connected), () => ({ csrfToken, expired: authExpired }), expireAuthentication);
+  const automate = new WorkspaceAutomate(`serve-avd:features:${BOOT.basePath}:${account?.id ?? "local"}`, () => visibleViews().filter(view => view.connected),
     (active, steps) => remote.setMacroRecording(active, steps));
+  const observer = new WorkspaceObservability({ capturesRoot, activityRoot, eventsEndpoint: api.eventLogEventsEndpoint,
+    visibleDevices: () => visibleViews().filter(view => view.connected).map(view => view.entry.device),
+    onChange: () => queueMicrotask(() => {
+      const counts = observer.counts;
+      activityButton.textContent = `Activity ${counts.events}`;
+      capturesButton.textContent = `Captures ${counts.captures}`;
+      drawer.dataset.recordings = String(counts.recordings);
+      drawer.dataset.crashes = String(counts.crashes);
+    }),
+    onCrashChange: serial => apps.refreshDevice(serial),
+    onNotice: message => { drawerNotice.textContent = message; },
+    onOpenCaptures: () => openDrawer("captures"), onOpenActivity: () => openDrawer("activity"),
+    onSaveMacro: (steps, name) => { automate.saveFromTimeline(steps, name); panes?.open("automate"); },
+    onOpenCrash: serial => { selectDevice(serial, false); panes?.open("apps"); } });
+  apps.setCrashRenderer((root, serial) => observer.renderInApp(root, serial));
   remote.setMacroActions(() => { automate.select(views.find(view => view.entry.device === activeDeviceId) ?? null); automate.toggleRecording(); }, () => panes?.open("automate"));
-  window.addEventListener("auth-expired", () => { apps.destroy(); automate.destroy(); remote.destroy(); });
+  window.addEventListener("auth-expired", () => { apps.destroy(); automate.destroy(); remote.destroy(); observer.destroy(); for (const tool of tools.values()) tool.destroy(); });
   stageHost.append(remote.root);
   const railToggle = workspaceButton("rail", "Toggle device list", () => {
     showRail = !showRail;
@@ -1830,6 +1904,7 @@ async function main(): Promise<void> {
     if (changed) views.find(v => v.entry.device === activeDeviceId)?.cancelInteraction();
     hidden.delete(id);
     activeDeviceId = id;
+    observer.selectDevice(id);
     update();
     if (changed) panes?.refreshTarget();
     if (focusInput) canvas.reveal(id);
@@ -1858,9 +1933,22 @@ async function main(): Promise<void> {
     views.push(view);
     stage.append(view.root);
     apps.mountDevice(view);
+    const footer = el("footer", { class: "device-footer" });
+    view.root.append(footer);
+    const tool = new DeviceTools({ device: view, header: view.root.querySelector<HTMLElement>(".device-head-actions")!, footer,
+      screen: view.root.querySelector<HTMLElement>(".screen-wrap")!,
+      storageKey: `serve-avd:quality:${BOOT.basePath}:${account?.id ?? "local"}:${entry.device}`,
+      screenSize: () => view.featureScreenSize, browserMetrics: () => view.featureBrowserMetrics,
+      onQuality: quality => view.setStreamQuality(quality) });
+    tools.set(entry.device, tool);
+    observer.attachDevice(entry, { header: view.root.querySelector<HTMLElement>(".device-head-actions")!, footer,
+      screen: view.root.querySelector<HTMLElement>(".screen-wrap")! });
+    view.root.querySelector('[aria-label="Screenshot to captures"]')?.remove();
+    view.root.addEventListener("devicescreenshot", () => void observer.screenshot(entry.device));
     view.root.addEventListener("deviceinput", event => {
       const { tag, body } = (event as CustomEvent<{tag:number;body:Record<string, unknown>}>).detail;
       automate.observeInput(entry.device, tag, body);
+      tool.observeInput(tag, body);
     });
     selector.append(el("option", { value: entry.device, text: entry.name }));
     const select = el("button", { class: "rail-select", type: "button", "aria-label": `Select ${entry.name}` },
@@ -1940,6 +2028,9 @@ async function main(): Promise<void> {
         const view = views[i]!;
         if (data.devices.some(d => d.serial === view.entry.device && d.state === "device")) continue;
         apps.removeDevice(view.entry.device);
+        observer.removeDevice(view.entry.device);
+        tools.get(view.entry.device)?.destroy();
+        tools.delete(view.entry.device);
         view.destroy();
         view.root.remove();
         railNodes.get(view.entry.device)?.row.remove();
@@ -1992,7 +2083,9 @@ async function main(): Promise<void> {
       panes?.close(); update();
     }
   });
-  app.replaceChildren(header, el("div", { class: "layout" }, rail, stageHost, panes.root));
+  app.replaceChildren(header, el("div", { class: "layout" }, rail, stageHost, panes.root), drawer);
+  updateDrawer();
+  if (activeDeviceId) observer.selectDevice(activeDeviceId);
   const initial = BOOT.initialState.panes;
   if (initial?.length) { if (initial[0] !== "none") panes.open(initial[0]!); }
   else if (!mobile.matches) panes.open("tools");
