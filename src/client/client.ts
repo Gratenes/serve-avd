@@ -343,6 +343,8 @@ class DeviceView {
       this.buildControls(),
     );
 
+    this.root.querySelector(".device-frame")!.append(this.root.querySelector(".device-control-sidebar")!);
+
     const actions = el("div", { class: "device-head-actions" },
       iconButton("camera", "Screenshot", () => window.open(this.entry.screenshotEndpoint, "_blank")),
       iconButton("rotateCcw", "Rotate", () => this.rotateStep(1)),
@@ -440,8 +442,8 @@ class DeviceView {
         button("Send", "Send text to device", sendText),
         button("Enter", "Press Enter on device", () => this.sendKey("Enter")),
         button("Backspace", "Press Backspace on device", () => this.sendKey("Backspace"))));
-    const utilities = el("details", { class: "device-utilities" }, el("summary", { text: "Device controls" }), nav, tools);
-    return el("div", { class: "device-controls" }, textPanel, utilities);
+    return el("div", { class: "device-controls" }, textPanel,
+      el("div", { class: "device-control-sidebar", role: "group", "aria-label": `Device controls for ${this.entry.name}` }, nav, tools));
   }
 
   /**
@@ -1120,7 +1122,6 @@ class Panes {
       this.tabs.set(name, tab);
       tabBar.append(tab);
     }
-    tabBar.append(button("Close", "Close inspector", () => this.close(), "inspector-close"));
     this.root = el("aside", { class: "panes inspector hidden", "aria-label": "Inspector" }, this.identity, tabBar, this.body);
   }
 
@@ -1807,7 +1808,7 @@ async function main(): Promise<void> {
     remote.setVisible(showRemote);
     updateRemote();
   }
-  function selectDevice(id: string): void {
+  function selectDevice(id: string, focusInput = true): void {
     if (!views.some(v => v.entry.device === id)) return;
     const changed = activeDeviceId !== id;
     if (changed) views.find(v => v.entry.device === activeDeviceId)?.cancelInteraction();
@@ -1815,6 +1816,7 @@ async function main(): Promise<void> {
     activeDeviceId = id;
     update();
     if (changed) panes?.refreshTarget();
+    if (focusInput) views.find(v => v.entry.device === id)?.root.querySelector<HTMLElement>(".screen-wrap")?.focus({ preventScroll: true });
   }
   const toggleDevice = (id: string) => {
     if (hidden.has(id)) { hidden.delete(id); activeDeviceId ??= id; }
@@ -1864,8 +1866,12 @@ async function main(): Promise<void> {
     railNodes.set(entry.device, { row, select, eye, meta });
     railList.append(row);
     if (!hidden.has(entry.device)) activeDeviceId ??= entry.device;
-    view.root.addEventListener("pointerdown", () => selectDevice(entry.device), true);
-    view.root.addEventListener("focusin", () => selectDevice(entry.device));
+    view.root.addEventListener("pointerdown", () => selectDevice(entry.device, false), true);
+    view.root.addEventListener("click", event => {
+      const target = event.target as Element;
+      if (!target.closest("button, input, textarea, select, summary, a, [contenteditable], [role=button]")) selectDevice(entry.device);
+    });
+    view.root.addEventListener("focusin", () => selectDevice(entry.device, false));
     view.root.addEventListener("devicechange", updateRemote);
     view.root.addEventListener("devicefocus", () => { layout = layout === "focus" && activeDeviceId === entry.device ? "split" : "focus"; selectDevice(entry.device); });
     view.root.addEventListener("devicehide", () => toggleDevice(entry.device));
