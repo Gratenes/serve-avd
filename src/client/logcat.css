@@ -1,25 +1,60 @@
-/* Compact Logcat rows use the inspector's existing type and color tokens. */
-.logs .logs-head { display: flex; align-items: center; gap: 6px; }
-.logs-head .input { flex: 1; min-width: 0; }
+/* CodeMirror provides one scrollable log document in the inspector and dialogs. */
+.logs { min-width: 0; }
+.logs .logs-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.logs-head .input { flex: 1; min-width: 140px; }
 .logs-head .logs-toolbar { display: flex; flex: none; gap: 4px; margin: 0; }
 .logs-head .logs-toolbar .btn { padding: 6px; font-size: 11px; }
-.logcat-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+.logs .logcat-heading { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding-top: 10px; font-size: 12px; }
+.logs .logcat-heading > span { font-size: 11px; }
+.logcat-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .logcat-levels { display: flex; align-items: center; gap: 4px; }
 .logcat-level-label { font-size: 11px; margin-right: 2px; }
 .logcat-levels .btn { width: 26px; height: 26px; padding: 0; border-radius: 5px; font: 11px var(--mono); background: transparent; }
 .logcat-levels .btn[aria-pressed=true] { border-color: currentColor; background: #262a2f; }
 .logcat-controls > .btn { margin-left: auto; height: 26px; padding: 0 7px; font-size: 11px; }
 .logcat-controls > .btn[aria-checked=true] { background: #22352c; color: var(--accent); border-color: var(--accent-dim); }
-.logs .log-lines { margin-top: 10px; background: #0e0f12; }
-.logs .log-line { display: grid; grid-template-columns: 78px 16px minmax(0, 1fr); gap: 6px; align-items: start; padding: 5px 8px; border-bottom: 1px solid #17191c; }
-.logs .log-line.log-unparsed { display: block; white-space: pre-wrap; overflow-wrap: anywhere; }
-.log-content { min-width: 0; }
-.logs .log-message { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-dim); }
-.log-repeat { display: inline-block; margin-left: 6px; padding: 0 4px; border-radius: 3px; background: #262a2f; color: var(--text-dim); }
-.logcat-levels .log-level-v, .log-level-v .log-level { color: #a3a9b0; }
-.logcat-levels .log-level-d, .log-level-d .log-level { color: #7cb7ff; }
-.logcat-levels .log-level-i, .log-level-i .log-level { color: #6ee7b7; }
-.logcat-levels .log-level-w, .log-level-w .log-level, .log-severity-w { color: #f5b544; }
-.logcat-levels .log-level-e, .log-level-e .log-level, .log-level-f .log-level, .log-level-a .log-level, .log-severity-e, .log-severity-f, .log-severity-a { color: #f2777a; }
+.logcat-actions { display: flex; gap: 5px; flex-wrap: wrap; }
+.logcat-actions .btn { font-size: 11px; padding: 5px 8px; }
+.logcat-actions .btn[aria-pressed=true], .saved-log-dialog .btn[aria-pressed=true] { background: #22352c; color: #6ee7b7; border-color: #2f5a47; }
+.logs .log-lines, .saved-log-content { position: relative; flex: 1; min-height: 120px; min-width: 0; overflow: hidden; padding: 0; margin: 0; background: #0e0f12; border: 1px solid var(--border, #262a2f); border-radius: 8px; white-space: normal; word-break: normal; }
+.log-lines > .cm-editor, .saved-log-content > .cm-editor { position: absolute; inset: 0; }
+.log-lines .cm-scroller, .saved-log-content .cm-scroller { overscroll-behavior: contain; scrollbar-color: #49515c #0e0f12; }
+.log-lines .cm-content, .saved-log-content .cm-content { user-select: text; }
+.log-lines .cm-line.log-line, .saved-log-content .cm-line.log-line { display: block; padding: 0 10px; color: #d6d9df; }
+.log-lines .cm-line.log-level-w, .saved-log-content .cm-line.log-level-w { background: #f5b5440a; border-left: 2px solid #f5b54480; }
+.log-lines .cm-line.log-level-e, .log-lines .cm-line.log-level-f, .log-lines .cm-line.log-level-a,
+.saved-log-content .cm-line.log-level-e, .saved-log-content .cm-line.log-level-f, .saved-log-content .cm-line.log-level-a { background: #f2777a0d; border-left: 2px solid #f2777a99; }
+.log-lines .cm-line:hover { background: #171b20; }
+.log-lines:focus-within, .saved-log-content:focus-within { border-color: #527562; }
+.log-inspect { display: inline-block; vertical-align: top; width: 18px; height: 21px; margin-right: 6px; border: 0; background: transparent; color: #7c838b; cursor: pointer; padding: 0; font: 13px/21px var(--mono, monospace); }
+.log-inspect:hover, .log-inspect:focus-visible { color: #6ee7b7; background: #22352c; border-radius: 4px; }
+.log-repeat { display: inline-block; margin-left: 8px; padding: 0 4px; border-radius: 3px; background: #262a2f; color: #a3a9b0; font-size: 10px; }
+.log-match { background: #66531a; color: #fff3cc; }
+.logcat-levels .log-level-v { color: #a3a9b0; }
+.logcat-levels .log-level-d { color: #7cb7ff; }
+.logcat-levels .log-level-i { color: #6ee7b7; }
+.logcat-levels .log-level-w, .log-severity-w { color: #f5b544; }
+.logcat-levels .log-level-e, .log-severity-e, .log-severity-f, .log-severity-a { color: #f2777a; }
 .logcat-badge { margin-left: 6px; font: 10px var(--mono); padding: 1px 5px; border-radius: 4px; background: #262a2f; }
-@media (max-width: 700px) { .logcat-levels .btn, .logcat-controls > .btn { min-width: 36px; height: 40px; } }
+.log-entry-detail { flex: none; border: 1px solid #354039; background: #101714; border-radius: 8px; padding: 10px; }
+.log-entry-detail[hidden] { display: none; }
+.log-entry-heading { display: flex; gap: 6px; align-items: center; font-size: 11px; }
+.log-entry-heading strong { margin-right: auto; }
+.log-entry-heading .btn { font-size: 10px; padding: 4px 6px; }
+.log-entry-detail pre { max-height: 200px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.7 var(--mono, monospace); color: #eceef0; margin: 10px 0 0; user-select: text; }
+.log-count, .log-feedback { font-size: 10px; color: #a3a9b0; flex: none; overflow-wrap: anywhere; }
+.log-feedback:empty { display: none; }
+.log-empty { position: absolute; inset: 0; display: grid; align-content: center; padding: 20px; color: #7c838b; text-align: center; font-size: 12px; pointer-events: none; }
+.log-empty[hidden] { display: none; }
+.logcat-dialog { width: min(1200px, 94vw); height: 88vh; max-width: 94vw; max-height: 92vh; padding: 20px; box-sizing: border-box; border: 1px solid #354039; border-radius: 14px; background: #121417; color: #eceef0; box-shadow: 0 24px 100px #000b; }
+.logcat-dialog::backdrop { background: #08090bd9; backdrop-filter: blur(4px); }
+.logcat-dialog .logs { height: 100%; }
+.saved-log-dialog[open] { display: flex; flex-direction: column; gap: 14px; }
+.saved-log-dialog a { color: #6ee7b7; text-decoration: none; }
+.saved-log-dialog .log-entry-heading { flex-wrap: wrap; }
+.cm-search input { max-width: 100%; box-sizing: border-box; }
+@media (max-width: 700px) {
+  .logcat-levels .btn, .logcat-controls > .btn { min-width: 36px; height: 40px; }
+  .logcat-dialog { padding: 12px; width: 96vw; max-width: 96vw; }
+  .log-inspect { width: 26px; }
+}

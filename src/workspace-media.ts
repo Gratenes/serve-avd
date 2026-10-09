@@ -1,22 +1,16 @@
-import {
-  spawn,
-  execFile,
-  type ChildProcessWithoutNullStreams,
-} from "node:child_process";
+import { spawn, execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync, statSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
-import { once } from "node:events";
+import { join, basename } from "node:path";
+import { startNativeRecording, type NativeRecording, type RecordingPart } from "./native-recording";
 import { adbExecOut } from "./adb";
 import {
-  listEventLogEvents,
   subscribeEventLog,
   recordEventLogEvent,
   type EventLogEntry,
 } from "./event-log";
 import type {
   CaptureArtifact,
-  CaptureFormat,
   RecordingState,
 } from "./workspace-types";
 
@@ -100,17 +94,26 @@ export function keySubtitles(
       .join("\n")
   );
 }
+interface VideoProbe {
+  format: { duration?: string };
+  streams: { codec_type: string; width?: number; height?: number; avg_frame_rate?: string; duration?: string }[];
+}
+function probeVideo(path: string): Promise<VideoProbe> {
+  return new Promise((resolve, reject) =>
+    execFile(process.env.SERVE_AVD_FFPROBE || "ffprobe",
+      ["-v", "error", "-show_format", "-show_streams", "-of", "json", path],
+      { timeout: 10_000 }, (err, out) => {
+        if (err) return reject(new Error(`Unable to verify recorded video: ${err.message}`));
+        try { resolve(JSON.parse(out)); } catch (error) { reject(error); }
+      }));
+}
 interface ActiveRecording {
   state: RecordingState;
-  proc: ChildProcessWithoutNullStreams;
+  native: NativeRecording;
   output: string;
   stopping: boolean;
-  finished: Promise<void>;
-  frames: number;
   logs: boolean;
   burn: boolean;
-  error: string;
-  task: Promise<void>;
   timer: ReturnType<typeof setTimeout>;
   events: EventLogEntry[];
   unsubscribe: () => void;
@@ -119,6 +122,9 @@ export class DeviceMedia {
   readonly captures: CaptureArtifact[] = [];
   private active: ActiveRecording | null = null;
   private starting = false;
+  private closed = false;
+  recordingError: string | null = null;
+  private pendingNative: NativeRecording | null = null;
   private stopPromise: Promise<CaptureArtifact> | null = null;
   constructor(
     private serial: string,
@@ -129,6 +135,7 @@ export class DeviceMedia {
     ) => { at: number; line: string }[],
     private screenshot: () => Promise<Buffer> = () =>
       adbExecOut(serial, ["screencap", "-p"], { timeout: 10_000 }),
+    private recordNative = startNativeRecording,
   ) {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
   }
@@ -142,6 +149,10 @@ export class DeviceMedia {
       this.dir,
       `${id}.${part === "file" ? artifact.format : part === "logs" ? "log.txt" : "keys.json"}`,
     );
+  }
+  sharedFile(id: string): { path: string; format: string } | null {
+    const capture = this.captures.find(item => item.id === id);
+    return !this.closed && capture ? { path: this.path(id), format: capture.format } : null;
   }
   private add(artifact: CaptureArtifact): CaptureArtifact {
     this.captures.unshift(artifact);
@@ -200,111 +211,41 @@ export class DeviceMedia {
       duration > MAX_RECORDING_SECONDS
     )
       throw new Error("Recording length must be 1–1800 seconds");
-    // Probe a real frame first: a missing device must not create a phantom recording.
+    if (this.closed) throw new Error("Device session is closed");
     this.starting = true;
-    let first: Buffer;
-    try {
-      first = await this.screenshot();
-    } finally {
-      this.starting = false;
-    }
-    if (!authorized()) throw new Error("Session expired");
+    this.recordingError = null;
     const id = randomUUID();
     const output = join(this.dir, `${id}.mp4`);
-    const proc = spawn(
-      process.env.SERVE_AVD_FFMPEG || "ffmpeg",
-      [
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-y",
-        "-use_wallclock_as_timestamps",
-        "1",
-        "-f",
-        "image2pipe",
-        "-framerate",
-        "4",
-        "-i",
-        "pipe:0",
-        "-vf",
-        "fps=4,scale=trunc(iw/2)*2:trunc(ih/2)*2",
-        "-an",
-        ...encodingArgs("mp4"),
-        "-fs",
-        String(MAX_CAPTURE_BYTES),
-        output,
-      ],
-      { stdio: ["pipe", "pipe", "pipe"] },
-    );
-    let resolve!: () => void;
-    let reject!: (e: Error) => void;
-    const finished = new Promise<void>((r, j) => {
-      resolve = r;
-      reject = j;
-    });
-    void finished.catch(() => {});
+    const native = this.recordNative(this.serial, this.dir, id, duration, MAX_CAPTURE_BYTES);
+    this.pendingNative = native;
+    try {
+      await native.ready;
+      if (!authorized() || this.closed) throw new Error("Device session closed or authorization expired");
+    } catch (error) {
+      native.abort();
+      this.recordingError = error instanceof Error ? error.message : String(error);
+      throw error;
+    } finally {
+      this.starting = false;
+      this.pendingNative = null;
+    }
     const active: ActiveRecording = {
-      state: {
-        id,
-        startedAt: new Date().toISOString(),
-        format,
-        maxSeconds: duration,
-        captureFps: 4,
-      },
-      proc,
-      output,
-      stopping: false,
-      finished,
-      frames: 1,
-      logs: options.attachLogs !== false,
-      burn: options.burnKeys === true,
-      error: "",
-      task: Promise.resolve(),
-      events: [],
-      unsubscribe: () => {},
-      timer: setTimeout(
-        () => void this.stop().catch(() => {}),
-        duration * 1000,
-      ),
+      state: { id, startedAt: new Date().toISOString(), format, maxSeconds: duration, captureFps: 60 },
+      native, output, stopping: false,
+      logs: options.attachLogs !== false, burn: options.burnKeys === true,
+      events: [], unsubscribe: () => {},
+      timer: setTimeout(() => void this.stop().catch(() => {}), duration * 1000),
     };
     active.timer.unref();
     this.active = active;
-    active.unsubscribe = subscribeEventLog((event) => {
-      if (event.device === this.serial && active.events.length < 10_000)
-        active.events.push(event);
+    active.unsubscribe = subscribeEventLog(event => {
+      if (event.device === this.serial && active.events.length < 10_000) active.events.push(event);
     });
-    proc.stderr.on(
-      "data",
-      (chunk) => (active.error = (active.error + chunk).slice(-4000)),
+    // Auto-stop and device failures take the same finalization/error path as Stop.
+    void native.done.then(
+      () => { if (this.active === active && !active.stopping) void this.stop().catch(() => {}); },
+      () => { if (this.active === active && !active.stopping) void this.stop().catch(() => {}); },
     );
-    proc.stdout.resume();
-    proc.stdin.on("error", () => {});
-    proc.on("error", (err) => {
-      reject(new Error(`ffmpeg unavailable: ${err.message}`));
-      void this.stop().catch(() => {});
-    });
-    proc.on("close", (code) => {
-      code === 0
-        ? resolve()
-        : reject(new Error(active.error || `Recording encoder exited ${code}`));
-      if (!active.stopping) void this.stop().catch(() => {});
-    });
-    proc.stdin.write(first);
-    active.task = (async () => {
-      while (!active.stopping && proc.exitCode === null) {
-        await new Promise((r) => setTimeout(r, 250));
-        if (active.stopping) break;
-        const data = await this.screenshot();
-        if (active.stopping) break;
-        if (!proc.stdin.write(data))
-          await Promise.race([once(proc.stdin, "drain"), finished]);
-        active.frames++;
-      }
-    })().catch((err) => {
-      active.error = String(err);
-      proc.stdin.end();
-      void this.stop().catch(() => {});
-    });
     recordEventLogEvent({
       device: this.serial,
       source: "ui",
@@ -324,37 +265,51 @@ export class DeviceMedia {
     if (!active) throw new Error("No active recording");
     active.stopping = true;
     clearTimeout(active.timer);
-    const end = Date.now();
+    let end = Date.now();
+    let parts: RecordingPart[] = [];
+    const normalized: string[] = [];
     try {
-      await active.task;
-      active.proc.stdin.end();
-      const kill = setTimeout(() => active.proc.kill("SIGKILL"), 20_000);
-      kill.unref();
-      try {
-        await active.finished;
-      } finally {
-        clearTimeout(kill);
+      await active.native.stop();
+      parts = await active.native.done;
+      const lastPart = parts.at(-1);
+      if (lastPart) end = Math.min(end, lastPart.startedAt + lastPart.duration * 1000);
+      if (this.closed) throw new Error("Device session closed during recording");
+      // Native screenrecord emits frames only when Android redraws. Preserve its
+      // timestamps, then hold the last frame through the real recording interval.
+      // A completely static Android clip has one frame with zero sample duration;
+      // only that case needs an input frame rate to make ffmpeg decode the sample.
+      let geometry: { width: number; height: number } | undefined;
+      for (const [index, part] of parts.entries()) {
+        const source = await probeVideo(part.path);
+        const stream = source.streams.find(item => item.codec_type === "video");
+        if (!stream?.width || !stream.height) throw new Error("Android recording has no video stream");
+        geometry ??= { width: stream.width, height: stream.height };
+        const next = parts[index + 1];
+        const segmentEnd = next ? next.startedAt : Math.min(end, part.startedAt + part.duration * 1000);
+        const duration = Math.max(1 / 60, (segmentEnd - part.startedAt) / 1000);
+        const path = join(this.dir, `${active.state.id}-normalized-${index}.mp4`);
+        normalized.push(path);
+        const filter = `scale=${geometry.width}:${geometry.height}:force_original_aspect_ratio=decrease,pad=${geometry.width}:${geometry.height}:(ow-iw)/2:(oh-ih)/2,setsar=1,tpad=stop_mode=clone:stop_duration=${duration},fps=60`;
+        const staticClip = !(Number(stream.duration ?? source.format.duration) > 0);
+        await ffmpeg([...(staticClip ? ["-discard", "none", "-ignore_editlist", "1", "-r", "60"] : []),
+          "-i", part.path, "-map", "0:v:0", "-vf", filter, "-t", String(duration),
+          ...encodingArgs("mp4"), "-fs", String(MAX_CAPTURE_BYTES), path]);
       }
-      const measured = await new Promise<number>((resolve) =>
-        execFile(
-          process.env.SERVE_AVD_FFPROBE || "ffprobe",
-          [
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
-            active.output,
-          ],
-          { timeout: 10_000 },
-          (err, out) => resolve(err ? NaN : Number(out.trim())),
-        ),
-      );
-      const duration =
-        Number.isFinite(measured) && measured > 0
-          ? measured
-          : Math.max(0.25, (end - Date.parse(active.state.startedAt)) / 1000);
+      const manifest = join(this.dir, `${active.state.id}.concat`);
+      try {
+        writeFileSync(manifest, normalized.map(path => `file '${basename(path)}'`).join("\n"));
+        await ffmpeg(["-f", "concat", "-safe", "1", "-i", manifest,
+          "-map", "0:v:0", "-c", "copy", "-movflags", "+faststart", active.output]);
+      } finally { try { unlinkSync(manifest); } catch {} }
+      if (statSync(active.output).size > MAX_CAPTURE_BYTES) throw new Error("Recording exceeds the 256 MB limit");
+      const probe = await probeVideo(active.output);
+      const duration = Number(probe.format.duration);
+      const video = probe.streams.find((stream) => stream.codec_type === "video");
+      if (!video || !Number.isFinite(duration) || duration <= 0) throw new Error("Recording contains no playable video");
+      const expectedDuration = Math.max(1 / 60, (end - parts[0]!.startedAt) / 1000);
+      if (duration < expectedDuration - 0.2) throw new Error("Recording ended before the selected interval was saved (encoder or file-size limit)");
+      const [numerator, denominator] = String(video.avg_frame_rate).split("/").map(Number);
+      const fps = denominator ? numerator! / denominator : undefined;
       const events = active.events.filter(
         (e) => Date.parse(e.timestamp) <= end,
       );
@@ -376,6 +331,7 @@ export class DeviceMedia {
         name: this.serial,
         createdAt: active.state.startedAt,
         duration,
+        width: video.width, height: video.height, fps,
         format: "mp4",
         bytes: statSync(active.output).size,
         hasLogs: active.logs,
@@ -397,6 +353,11 @@ export class DeviceMedia {
       });
       return result;
     } catch (err) {
+      this.recordingError = err instanceof Error ? err.message : String(err);
+      active.native.abort();
+      void active.native.done.then(remaining => {
+        for (const part of remaining) { try { unlinkSync(part.path); } catch {} }
+      }, () => {});
       recordEventLogEvent({
         device: this.serial,
         source: "server",
@@ -411,6 +372,7 @@ export class DeviceMedia {
       throw err;
     } finally {
       active.unsubscribe();
+      for (const path of [...parts.map(part => part.path), ...normalized]) { try { unlinkSync(path); } catch {} }
       this.active = null;
     }
   }
@@ -491,8 +453,12 @@ export class DeviceMedia {
           unlinkSync(subtitle);
         } catch {}
     }
+    const converted = await probeVideo(output);
+    const convertedVideo = converted.streams.find(stream => stream.codec_type === "video");
+    const [n, d] = String(convertedVideo?.avg_frame_rate).split("/").map(Number);
     const artifact = {
       ...source,
+      width: convertedVideo?.width, height: convertedVideo?.height, fps: d ? n! / d : undefined,
       id: newId,
       createdAt: new Date(
         Date.parse(source.createdAt) + start * 1000,
@@ -523,11 +489,15 @@ export class DeviceMedia {
     return this.add(artifact);
   }
   close(): void {
+    this.closed = true;
+    this.pendingNative?.abort();
     if (this.active) {
       clearTimeout(this.active.timer);
       this.active.stopping = true;
       this.active.unsubscribe();
-      this.active.proc.kill("SIGKILL");
+      this.active.native.abort();
+      const native = this.active.native;
+      void native.done.then(parts => { for (const part of parts) { try { unlinkSync(part.path); } catch {} } }, () => {});
       this.active = null;
     }
   }

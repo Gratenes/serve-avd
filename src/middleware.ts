@@ -19,11 +19,13 @@
  * server just works; wire `server.on("upgrade", middleware.handleUpgrade)`
  * for input and live streams.
  */
+import { CaptureShares } from "./capture-shares";
+import { serveMediaFile } from "./media-response";
 import type { IncomingMessage, ServerResponse } from "http";
 import { AuthService, type AuthOptions } from "./auth";
 export { AuthService, type AuthOptions } from "./auth";
 import type { Socket } from "net";
-import { readFileSync, createReadStream, statSync } from "fs";
+import { readFileSync, statSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { WebSocketServer, type WebSocket as WsSocket } from "ws";
@@ -112,6 +114,8 @@ export interface EmuMiddleware {
   attachedSerials(): string[];
   /** Shared boundary for deployment wrapper routes. Run handle before overrides. */
   auth?: AuthService;
+  /** Handle scoped public capture links before wrapper authentication. */
+  handleShare(req: IncomingMessage, res: ServerResponse): boolean;
 }
 
 // ── Assets ─────────────────────────────────────────────────────────────────
@@ -314,6 +318,7 @@ export function emuMiddleware(
   if (!options.auth && options.auth !== false)
     throw new Error("Authentication is required, including on localhost. Configure auth or explicitly set auth: false for unsafe unauthenticated use.");
   const base = normalizeBase(options.basePath);
+  const shares = new CaptureShares(base);
   const codec = options.codec ?? "auto";
   const workspace = new WorkspaceService(options.workspaceDir);
   const auth = options.auth ? new AuthService(options.auth, base) : undefined;
@@ -378,6 +383,8 @@ export function emuMiddleware(
     if (base !== "" && pathname !== base && !pathname.startsWith(`${base}/`))
       return notMine();
     const rel = base === "" ? pathname : pathname.slice(base.length) || "/";
+
+    if (shares.handle(req, res)) return;
 
     if (auth) {
       sameOriginResponse(res);
@@ -592,7 +599,10 @@ export function emuMiddleware(
           /^\/(?:workspace|apps|builds|preset-current|metrics|quality|crashes|snapshot-default|apk|recording|captures)(?:\/|$)/.test(
             endpoint,
           );
-        if (featureRoute && !["GET", "POST"].includes(req.method ?? "")) {
+        const captureMethod =
+          (req.method === "DELETE" && /^\/captures\/[a-f0-9-]+\/share$/.test(endpoint)) ||
+          (req.method === "HEAD" && /^\/captures\/[a-f0-9-]+\/(file|logs)$/.test(endpoint));
+        if (featureRoute && !captureMethod && !["GET", "POST"].includes(req.method ?? "")) {
           sendJson(res, 405, { error: "method_not_allowed" });
           return;
         }
@@ -746,11 +756,21 @@ export function emuMiddleware(
           sendJson(res, 200, { result, ...workspace.state(session) });
           return;
         }
-        const artifact = /^\/captures\/([a-f0-9-]+)\/(file|logs|export)$/.exec(
+        const artifact = /^\/captures\/([a-f0-9-]+)\/(file|logs|export|share)$/.exec(
           endpoint,
         );
         if (artifact) {
           const media = workspace.device(session).media;
+          if (artifact[2] === "share") {
+            const key = `${session.serial}/${artifact[1]}`;
+            if (req.method === "POST") {
+              const result = shares.create(key, () => media.sharedFile(artifact[1]!));
+              sendJson(res, 200, result);
+            } else if (req.method === "DELETE") {
+              shares.revoke(key); sendJson(res, 200, { ok: true });
+            } else sendJson(res, 405, { error: "method_not_allowed" });
+            return;
+          }
           if (artifact[2] === "export" && req.method === "POST") {
             const body = JSON.parse((await readBody(req)).toString() || "{}");
             if (!authorized()) {
@@ -761,7 +781,7 @@ export function emuMiddleware(
             sendJson(res, 200, { capture });
             return;
           }
-          if (req.method !== "GET") {
+          if (req.method !== "GET" && req.method !== "HEAD") {
             sendJson(res, 405, { error: "method_not_allowed" });
             return;
           }
@@ -776,7 +796,7 @@ export function emuMiddleware(
             return;
           }
           const path = media.path(capture.id, part);
-          res.writeHead(200, {
+          serveMediaFile(req, res, path, {
             "Content-Type":
               part === "logs"
                 ? "text/plain; charset=utf-8"
@@ -785,11 +805,9 @@ export function emuMiddleware(
                   : capture.format === "webm"
                     ? "video/webm"
                     : `image/${capture.format}`,
-            "Content-Length": statSync(path).size,
             "Cache-Control": "private, no-store",
             "Content-Disposition": `inline; filename="capture-${capture.id}.${part === "logs" ? "txt" : capture.format}"`,
           });
-          createReadStream(path).pipe(res);
           return;
         }
         switch (endpoint) {
@@ -1013,6 +1031,7 @@ export function emuMiddleware(
   };
 
   middleware.auth = auth;
+  middleware.handleShare = (req, res) => shares.handle(req, res);
   middleware.attachDevice = attachDevice;
   middleware.attachedSerials = () => [...attached];
 

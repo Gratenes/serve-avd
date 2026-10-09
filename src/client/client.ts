@@ -433,7 +433,6 @@ class DeviceView {
       iconButton("volumeUp", "Volume up", () => this.sendButton("volume-up")),
       iconButton("power", "Power", () => this.sendButton("power")),
       iconButton("moon", "Toggle light/dark theme", () => this.toggleTheme()),
-      iconButton("camera", "Save screenshot", () => this.root.dispatchEvent(new Event("devicescreenshot"))),
     );
 
     const textPanel = el("details", { class: "text-entry" });
@@ -1943,7 +1942,6 @@ async function main(): Promise<void> {
     tools.set(entry.device, tool);
     observer.attachDevice(entry, { header: view.root.querySelector<HTMLElement>(".device-head-actions")!, footer,
       screen: view.root.querySelector<HTMLElement>(".screen-wrap")! });
-    view.root.querySelector('[aria-label="Screenshot to captures"]')?.remove();
     view.root.addEventListener("devicescreenshot", () => void observer.screenshot(entry.device));
     view.root.addEventListener("deviceinput", event => {
       const { tag, body } = (event as CustomEvent<{tag:number;body:Record<string, unknown>}>).detail;

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { execFileSync } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import {
   CrashCollector,
   parseCpuPercent,
@@ -128,6 +128,18 @@ test("actual ffmpeg artifacts support MP4, WebM, GIF, trim, key burn and matchin
       dir,
       (start, end) => logs.filter((l) => l.at >= start && l.at <= end),
       async () => frame,
+      (_serial, outputDir, id) => {
+        const path = join(outputDir, `${id}-fixture.mp4`);
+        const child = spawn("ffmpeg", ["-v", "error", "-y", "-re", "-f", "lavfi", "-i",
+          "testsrc2=size=160x90:rate=60", "-t", "10", "-c:v", "libx264", "-preset", "ultrafast", path], { stdio: "ignore" });
+        const startedAt = Date.now();
+        const done = new Promise<import("../src/native-recording").RecordingPart[]>((resolve, reject) => {
+          child.once("error", reject);
+          child.once("close", code => code === 0 || code === 255 ? resolve([{ path, startedAt, duration: (Date.now() - startedAt) / 1000 }]) : reject(new Error(`fixture exited ${code}`)));
+        });
+        return { ready: new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); }),
+          done, stop: async () => { child.kill("SIGINT"); }, abort: () => { child.kill("SIGKILL"); } };
+      },
     );
     const state = await media.start({
       format: "mp4",

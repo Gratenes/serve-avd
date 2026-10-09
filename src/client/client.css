@@ -122,7 +122,10 @@ summary { cursor: pointer; color: var(--text-dim); font-size: 11px; padding: 8px
 .text-actions, .nav-row, .tool-row { display: flex; gap: 6px; flex-wrap: wrap; }
 .tool-row { margin-top: 6px; }
 .focus-thumbnail .device-chips, .focus-thumbnail .device-controls, .focus-thumbnail .remote-badge, .focus-thumbnail .device-control-sidebar { display: none; }
-.focus-thumbnail .device-head-actions .btn:nth-child(-n+3) { display: none; }
+.focus-thumbnail .device-head-actions [aria-label="Screenshot"],
+.focus-thumbnail .device-head-actions [aria-label="Rotate"],
+.focus-thumbnail .device-head-actions [aria-label="Fill screen with this device"],
+.focus-thumbnail .device-record-button { display: none; }
 .focus-thumbnail .device-head { padding-left: 8px; }
 .focus-thumbnail .device-frame { padding: 5px; }
 .empty { text-align: center; padding: 64px 24px; color: var(--text-dim); }
@@ -162,7 +165,7 @@ summary { cursor: pointer; color: var(--text-dim); font-size: 11px; padding: 8px
   .device-head { padding: 6px 8px; }
   .device-title strong { font-size: 12px; }
   .device-head-actions .btn { width: 36px; height: 44px; }
-  .device-head-actions .btn:nth-child(-n+2) { display: none; }
+  .device-head-actions > .btn[aria-label="Rotate"] { display: none; }
   .device-head-actions svg { width: 16px; height: 16px; }
   .device-chips { width: 100%; }
   .device-frame { padding: 6px 54px 6px 6px; }

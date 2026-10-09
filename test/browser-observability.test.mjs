@@ -1,3 +1,7 @@
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { harness } from "./browser-harness.mjs";
@@ -32,7 +36,7 @@ async function observedHarness() {
           startedAt: new Date().toISOString(),
           format: "mp4",
           maxSeconds: 30,
-          captureFps: 4,
+          captureFps: 60,
         };
       else {
         current.recording = null;
@@ -253,4 +257,76 @@ test("Observed crashes appear in header alerts and Apps with actual report conte
   } finally {
     await h.close();
   }
+});
+
+test('Saved video has a large playable preview, precise trim controls and readable attached logs on desktop and mobile', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'avd-browser-video-'));
+  const path = join(dir, 'clip.mp4');
+  execFileSync('ffmpeg', ['-v','error','-y','-f','lavfi','-i','testsrc2=size=640x360:rate=60','-t','2','-c:v','libx264','-pix_fmt','yuv420p','-movflags','+faststart',path]);
+  const { h, state } = await observedHarness();
+  try {
+    state.get('tv').captures = [{ id:'playable', device:'tv', name:'Living Room TV', createdAt:new Date().toISOString(),
+      duration:2, format:'mp4', width:640, height:360, fps:60, bytes:readFileSync(path).length, hasLogs:true, hasKeys:false }];
+    await h.page.route('**/tv/captures/playable/file', route => {
+      const data = readFileSync(path), range = route.request().headers().range;
+      if (!range) return route.fulfill({ contentType:'video/mp4', body:data, headers:{'accept-ranges':'bytes'} });
+      const match = /bytes=(\d+)-(\d*)/.exec(range);
+      const start = Number(match[1]), end = match[2] ? Math.min(Number(match[2]), data.length - 1) : data.length - 1;
+      return route.fulfill({status:206, contentType:'video/mp4', body:data.subarray(start,end+1), headers:{'accept-ranges':'bytes','content-range':`bytes ${start}-${end}/${data.length}`}});
+    });
+    await h.page.route('**/tv/captures/playable/logs', route => route.fulfill({ contentType:'text/plain', body:'10-09 12:00:01.000 E/Player(42): Actual device exception with full context\n10-09 12:00:02.000 I/Player(42): playback resumed' }));
+    await h.page.reload();
+    await h.page.getByRole('button', { name:'Captures 1', exact:true }).click();
+    const video = h.page.getByLabel('Saved recording of Living Room TV', { exact:true });
+    await h.page.waitForFunction(() => document.querySelector('.capture-player video')?.readyState >= 2);
+    const bounds = await video.boundingBox();
+    assert.ok(bounds.width >= 400 && bounds.height >= 240, JSON.stringify(bounds));
+    await video.evaluate(async element => { await element.play(); });
+    await h.page.waitForTimeout(150);
+    assert.ok(await video.evaluate(element => element.currentTime > 0));
+    await video.evaluate(element => { element.pause(); element.currentTime = 1; });
+    await h.page.waitForFunction(() => Math.abs(document.querySelector('.capture-player video').currentTime - 1) < 0.1);
+    await h.page.getByLabel('Trim start (seconds)', { exact:true }).fill('1.5');
+    await h.page.getByLabel('Trim end (seconds)', { exact:true }).fill('1');
+    assert.equal(await h.page.getByRole('button', { name:'Export trimmed clip', exact:true }).isEnabled(), false);
+    await h.page.getByLabel('Trim end (seconds)', { exact:true }).fill('2');
+    assert.equal(await h.page.getByRole('button', { name:'Export trimmed clip', exact:true }).isEnabled(), true);
+    assert.match(await h.page.locator('.capture-metadata').innerText(), /60 fps/);
+    await h.page.screenshot({ path:'/tmp/serve-avd-capture-desktop.png' });
+    await h.page.getByRole('button', { name:'View attached logs', exact:true }).click();
+    await h.page.getByText(/Actual device exception with full context/).waitFor();
+    await h.page.getByRole('searchbox', { name:'Search attached logs', exact:true }).fill('exception');
+    assert.doesNotMatch(await h.page.locator('.saved-log-content').innerText(), /playback resumed/);
+    await h.page.getByRole('button', { name:'Close logs', exact:true }).click();
+    assert.equal(await video.count(), 1);
+    await h.page.setViewportSize({ width:390,height:844 });
+    await video.scrollIntoViewIfNeeded();
+    assert.ok((await video.boundingBox()).width <= 390);
+    assert.ok(await h.page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    await h.page.screenshot({ path:'/tmp/serve-avd-capture-mobile.png' });
+    assert.deepEqual(h.errors, []);
+  } finally { await h.close(); rmSync(dir,{recursive:true,force:true}); }
+});
+
+
+test('Capture sharing creates a scoped public link and lets the user revoke it', async () => {
+  const { h, state } = await observedHarness();
+  try {
+    state.get('phone').captures = [{ id:'shared', device:'phone', name:'Pixel Phone', createdAt:new Date().toISOString(), duration:1, format:'png', bytes:12, hasLogs:false, hasKeys:false }];
+    const methods = [];
+    await h.page.route('**/phone/captures/shared/share', route => {
+      methods.push(route.request().method());
+      return route.fulfill({ json: { url:'/share/public-token', expiresAt:Date.now()+86400000 } });
+    });
+    await h.page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+    await h.page.reload();
+    await h.page.getByRole('button', { name:'Captures 1', exact:true }).click();
+    await h.page.getByRole('button', { name:'Copy share link', exact:true }).click();
+    await h.page.waitForFunction(() => document.body.textContent.includes('Share link copied. Anyone with it'));
+    assert.match(await h.page.evaluate(() => navigator.clipboard.readText()), /\/share\/public-token$/);
+    await h.page.getByRole('button', { name:'Revoke share link', exact:true }).click();
+    await h.page.waitForFunction(() => document.body.textContent.includes('Share link revoked.'));
+    assert.deepEqual(methods, ['POST', 'DELETE']);
+    assert.deepEqual(h.errors, []);
+  } finally { await h.close(); }
 });

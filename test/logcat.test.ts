@@ -26,3 +26,19 @@ test('Logcat deduplicates consecutive repeats while preserving processes, severi
   buffer.push('I/New(42): new'); assert.equal(buffer.records.length, 3); assert.equal(buffer.records[0]!.pid, 43);
   buffer.clear(); assert.equal(buffer.records.length, 0);
 });
+
+test('raw logs preserve repeat timestamps and full messages for copying and export', () => {
+  const buffer = new LogBuffer(3);
+  const first = '10-09 12:00:00.001 E/Player(42): actual exception';
+  const second = '10-09 12:00:01.001 E/Player(42): actual exception';
+  buffer.push(first); buffer.push(second);
+  assert.equal(buffer.records.length, 1);
+  assert.deepEqual(buffer.visible(createLogcatState(), null, buffer.raw).map(record => record.line), [first, second]);
+});
+
+test('Logcat preserves full entries past the old 16 KB cutoff', () => {
+  const line = 'E/Reader(42): ' + 'x'.repeat(20_000) + 'ROOT_CAUSE_AT_END';
+  const record = parseLogcat(line);
+  assert.equal(record.line, line);
+  assert.ok(record.message.endsWith('ROOT_CAUSE_AT_END'));
+});

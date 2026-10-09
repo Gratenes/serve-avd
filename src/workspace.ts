@@ -248,6 +248,7 @@ export class WorkspaceService {
     return {
       captures: data.media.captures,
       recording: data.media.recording,
+      recordingError: data.media.recordingError,
       builds: data.builds,
       crashes: session.crashes.reports,
       defaultSnapshot: this.getDefault(

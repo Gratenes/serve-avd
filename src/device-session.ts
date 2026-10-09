@@ -84,7 +84,7 @@ const STALL_STRIKES = 3;
  * backlog it can never drain.
  */
 const VIEWER_BACKLOG_MAX_BYTES = 2 * 1024 * 1024;
-const LOGCAT_RING_MAX = 500;
+const LOGCAT_RING_MAX = 5_000;
 
 type TouchGestureLog = {
   eventId?: number;
@@ -140,6 +140,7 @@ export class EmulatorSession {
   private stallTimer: ReturnType<typeof setTimeout> | null = null;
 
   private logcatProc: ChildProcess | null = null;
+  private logcatRetry: ReturnType<typeof setTimeout> | null = null;
   private logcatRing: string[] = [];
   private logcatHistory: {at:number;line:string}[] = [];
   readonly crashes: CrashCollector;
@@ -415,6 +416,7 @@ export class EmulatorSession {
       Connection: "keep-alive",
       ...CORS,
     });
+    res.flushHeaders();
     for (const line of this.logcatRing) {
       res.write(`data: ${JSON.stringify({ line })}\n\n`);
     }
@@ -433,8 +435,8 @@ export class EmulatorSession {
   }
 
   private ensureLogcat(): void {
-    if (this.logcatProc) return;
-    const proc = spawn(adbPath(), ["-s", this.serial, "logcat", "-v", "time", "-T", "50"], {
+    if (this.phase !== "running" || this.logcatProc) return;
+    const proc = spawn(adbPath(), ["-s", this.serial, "logcat", "-v", "time", "-T", "2000"], {
       stdio: ["ignore", "pipe", "ignore"],
     });
     this.logcatProc = proc;
@@ -455,11 +457,19 @@ export class EmulatorSession {
     });
     proc.on("error", () => {});
     proc.on("exit", () => {
-      if (this.logcatProc === proc) { this.logcatProc = null; if(this.phase === "running") { const retry=setTimeout(()=>this.ensureLogcat(),1000);retry.unref(); } }
+      if (this.logcatProc === proc) {
+        this.logcatProc = null;
+        if (this.phase === "running") {
+          this.logcatRetry = setTimeout(() => { this.logcatRetry = null; this.ensureLogcat(); }, 1000);
+          this.logcatRetry.unref();
+        }
+      }
     });
   }
 
   private stopLogcat(): void {
+    if (this.logcatRetry) clearTimeout(this.logcatRetry);
+    this.logcatRetry = null;
     const proc = this.logcatProc;
     this.logcatProc = null;
     this.logcatCarry = "";

@@ -10,6 +10,9 @@ export interface CaptureArtifact {
   bytes: number;
   hasLogs: boolean;
   hasKeys: boolean;
+  width?: number;
+  height?: number;
+  fps?: number;
   fileUrl?: string;
   logsUrl?: string;
 }
@@ -70,6 +73,7 @@ export interface PerformanceSample {
 export interface WorkspaceState {
   captures: CaptureArtifact[];
   recording: RecordingState | null;
+  recordingError?: string | null;
   crashes: CrashReport[];
   builds: RecentBuild[];
   defaultSnapshot: string | null;

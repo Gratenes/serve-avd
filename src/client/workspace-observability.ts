@@ -1,3 +1,4 @@
+import { openLogFile } from "./logcat";
 import { node, control, field, row, request, errorText } from "./feature-dom";
 import type { EventLogEntry } from "../event-log";
 import type {
@@ -169,15 +170,14 @@ export class WorkspaceObservability {
     this.removeDevice(entry.device);
     const controls = node("div", "", "observer-controls");
     const record = button(
-      "○",
+      "",
       () => void this.toggleRecording(entry.device),
       "Record screen",
     );
-    const shot = button(
-      "▣",
-      () => void this.screenshot(entry.device),
-      "Screenshot to captures",
-    );
+    record.classList.add("device-record-button");
+    record.title = "Record screen";
+    record.setAttribute("aria-pressed", "false");
+    record.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="5.5"/><rect x="5" y="5" width="10" height="10" rx="1.5"/></svg><span class="record-label"></span>';
     const crash = button(
       "CRASH",
       () => this.openCrash(entry.device),
@@ -186,7 +186,9 @@ export class WorkspaceObservability {
     crash.classList.add("observer-crash-badge");
     crash.hidden = true;
     controls.append(record, crash);
-    mount.header.append(controls);
+    const screenshot = mount.header.querySelector('[aria-label="Screenshot"]');
+    if (screenshot) screenshot.after(controls);
+    else mount.header.append(controls);
     const alert = node("div", "", "observer-crash-alert");
     alert.setAttribute("role", "alert");
     alert.hidden = true;
@@ -268,6 +270,8 @@ export class WorkspaceObservability {
                 JSON.stringify(state.captures) ||
               JSON.stringify(device.state?.recording) !==
                 JSON.stringify(state.recording);
+            if (state.recordingError && state.recordingError !== device.state?.recordingError)
+              this.options.onNotice(`${device.entry.name}: ${state.recordingError}`);
             device.state = state;
             this.options.onChange?.();
             this.updateCrash(device);
@@ -285,7 +289,8 @@ export class WorkspaceObservability {
   private updateRecordingLabels(): void {
     for (const device of this.devices.values()) {
       const rec = device.state?.recording;
-      device.record.textContent = rec ? `■ ${elapsed(rec.startedAt)}` : "○";
+      device.record.querySelector(".record-label")!.textContent = device.pending ? (rec ? "Saving…" : "Starting…") : rec ? elapsed(rec.startedAt) : "";
+      device.record.title = device.pending ? (rec ? "Saving recording" : "Starting recording") : rec ? "Stop recording" : "Record screen";
       device.record.classList.toggle("observer-rec", !!rec);
       device.record.setAttribute(
         "aria-label",
@@ -379,6 +384,8 @@ export class WorkspaceObservability {
   private renderCaptures(): void {
     const root = this.options.capturesRoot;
     const artifacts = this.allCaptures();
+    if (!this.captureId && artifacts.length) this.captureId = artifacts[0]!.capture.id;
+    root.classList.add("capture-library");
     root.replaceChildren();
     const format = select(
       "Recording format",
@@ -433,14 +440,17 @@ export class WorkspaceObservability {
       toolbar,
       node(
         "small",
-        "Recording samples the real display at up to 4 fps. Until stop has a 30-minute limit.",
+        "Native video recording · frame rate follows the device · up to 30 minutes / 256 MB",
       ),
     );
+    const workspace = node("div", "", "capture-workspace");
     const tray = node("div", "", "observer-captures");
+    tray.setAttribute("aria-label", "Saved captures");
     for (const { capture, entry } of artifacts) {
       const item = node("button", "", "capture-item");
       item.type = "button";
       item.classList.toggle("selected", capture.id === this.captureId);
+      item.setAttribute("aria-pressed", String(capture.id === this.captureId));
       item.setAttribute(
         "aria-label",
         `${capture.format.toUpperCase()} ${entry.name} ${timestamp(capture.createdAt)}`,
@@ -450,6 +460,8 @@ export class WorkspaceObservability {
         const video = node("video");
         video.src = url;
         video.preload = "metadata";
+        video.playsInline = true;
+        video.addEventListener("loadedmetadata", () => { video.currentTime = Math.min(0.1, video.duration / 2); });
         video.muted = true;
         item.append(video);
       } else {
@@ -471,7 +483,8 @@ export class WorkspaceObservability {
       });
       tray.append(item);
     }
-    root.append(tray);
+    workspace.append(tray);
+    root.append(workspace);
     if (!artifacts.length)
       root.append(
         node("p", "Take a screenshot or record a device to save a capture."),
@@ -480,7 +493,7 @@ export class WorkspaceObservability {
       (item) => item.capture.id === this.captureId,
     );
     if (selected)
-      this.renderCaptureDetail(root, selected.capture, selected.entry);
+      this.renderCaptureDetail(workspace, selected.capture, selected.entry);
   }
   private renderCaptureDetail(
     root: HTMLElement,
@@ -488,40 +501,61 @@ export class WorkspaceObservability {
     entry: ObserverDevice,
   ): void {
     const detail = node("div", "", "capture-detail");
+    const preview = node("section", "", "capture-preview");
+    const heading = node("div", "", "capture-preview-heading");
+    heading.append(node("strong", `${entry.name} · ${capture.format === "png" ? "Screenshot" : "Recording"}`),
+      node("span", new Date(capture.createdAt).toLocaleString(), "capture-date"));
+    const stage = node("div", "", "capture-player");
+    const metadata = node("div", "", "capture-metadata");
+    const size = capture.bytes >= 1024 * 1024 ? `${(capture.bytes / 1024 / 1024).toFixed(1)} MB` : `${(capture.bytes / 1024).toFixed(1)} KB`;
+    for (const label of [capture.format.toUpperCase(), capture.duration ? `${capture.duration.toFixed(2)} seconds` : "",
+      capture.width && capture.height ? `${capture.width} × ${capture.height}` : "",
+      capture.fps ? `${Math.round(capture.fps)} fps` : "", size].filter(Boolean)) metadata.append(node("span", label));
+    preview.append(heading, stage, metadata);
+    detail.append(preview);
     const url = `${base(entry)}/captures/${capture.id}/file`;
     if (capture.format === "mp4" || capture.format === "webm") {
       const video = node("video");
       video.src = url;
       video.controls = true;
-      detail.append(video);
+      video.playsInline = true;
+      video.preload = "metadata";
+      video.setAttribute("aria-label", `Saved recording of ${entry.name}`);
+      const error = node("p", "This preview could not be loaded. Download the capture to open it in your video player.", "capture-playback-error");
+      error.hidden = true;
+      video.addEventListener("error", () => { error.hidden = false; });
+      stage.append(video, error);
     } else {
       const image = node("img");
       image.src = url;
       image.alt = "Selected capture";
-      detail.append(image);
+      stage.append(image);
     }
     const form = node("div", "", "capture-detail-form");
-    const download = node("a", "Download capture");
+    form.append(node("strong", capture.format === "png" ? "Save & share" : "Export clip", "capture-export-title"));
+    const download = node("a", "↓ Download original", "capture-download");
     download.href = url;
     download.download = `capture-${entry.device}.${capture.format}`;
     form.append(download);
     if (capture.hasLogs) {
-      const logs = node("a", "Attached logcat");
+      form.append(button("View attached logs", () => void openLogFile(`${entry.name} · recording logs`, `${base(entry)}/captures/${capture.id}/logs`)));
+      const logs = node("a", "Download logcat");
       logs.href = `${base(entry)}/captures/${capture.id}/logs`;
       logs.download = "logcat.txt";
       form.append(logs);
     }
     form.append(
       button("Copy share link", () => {
-        void navigator.clipboard
-          .writeText(new URL(url, location.href).href)
-          .then(
-            () =>
-              this.options.onNotice(
-                "Capture link copied. Opening it requires access to this workspace.",
-              ),
-            (err) => this.notice(err),
-          );
+        void request<{ url: string; expiresAt: number }>(`${base(entry)}/captures/${capture.id}/share`, { method: "POST" })
+          .then(async (share: { url: string; expiresAt: number }) => {
+            await navigator.clipboard.writeText(new URL(share.url, location.href).href);
+            this.options.onNotice(`Share link copied. Anyone with it can view this capture until ${new Date(share.expiresAt).toLocaleString()}, while it remains available.`);
+          }).catch(err => this.notice(err));
+      }),
+      button("Revoke share link", () => {
+        void request(`${base(entry)}/captures/${capture.id}/share`, { method: "DELETE" })
+          .then(() => this.options.onNotice("Share link revoked. Previously copied links no longer work."))
+          .catch(err => this.notice(err));
       }),
       button("Open in timeline", () =>
         this.selectRange(
@@ -549,9 +583,14 @@ export class WorkspaceObservability {
         ["mp4", "gif", "webm"],
         capture.format,
       );
+      const selection = node("p", "", "capture-trim-summary");
+      const startSlider = field("Trim start position", "0", "range");
+      const endSlider = field("Trim end position", String(capture.duration), "range");
+      for (const slider of [startSlider, endSlider]) { slider.min = "0"; slider.max = String(capture.duration); slider.step = "0.01"; }
       let burn = false;
       const exportButton = button("Export trimmed clip", () => {
         exportButton.disabled = true;
+        exportButton.textContent = "Exporting…";
         void this.post<{ capture: CaptureArtifact }>(
           entry,
           `/captures/${capture.id}/export`,
@@ -567,10 +606,30 @@ export class WorkspaceObservability {
             return this.refresh();
           })
           .catch((err) => this.notice(err))
-          .finally(() => (exportButton.disabled = false));
+          .finally(() => { exportButton.textContent = "Export trimmed clip"; validateTrim(); });
       });
+      const validateTrim = () => {
+        const from = Number(start.value), to = Number(end.value);
+        const valid = start.value !== "" && end.value !== "" && Number.isFinite(from) && Number.isFinite(to) && from >= 0 && to <= capture.duration && to > from;
+        exportButton.disabled = !valid;
+        selection.textContent = valid ? `${(to - from).toFixed(2)} seconds selected` : "Choose an end time after the start, within the clip.";
+        selection.classList.toggle("observer-error", !valid);
+        start.setAttribute("aria-invalid", String(!valid)); end.setAttribute("aria-invalid", String(!valid));
+      };
+      for (const [input, slider] of [[start, startSlider], [end, endSlider]] as const) {
+        input.addEventListener("input", () => { slider.value = input.value; validateTrim(); });
+        slider.addEventListener("input", () => {
+          input.value = slider.value; validateTrim();
+          const video = stage.querySelector("video");
+          if (video && Number.isFinite(video.duration)) video.currentTime = Number(slider.value);
+        });
+      }
+      exportButton.classList.add("capture-export-button");
+      validateTrim();
       form.append(
+        node("span", "Trim range", "capture-field-label"),
         row(node("label", "Start"), start, node("label", "End"), end),
+        startSlider, endSlider, selection,
         format,
         check("Burn recorded keys", burn, (value) => (burn = value)),
         exportButton,

@@ -15,6 +15,7 @@ export function createDevHandler(middleware, serials, attached, { discoverAll = 
     res.setHeader("Cache-Control", "no-store");
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Referrer-Policy", "no-referrer");
+    if (middleware.handleShare?.(req, res)) return;
     if (await middleware.auth.handle(req, res)) return;
     const path = pathFor(req);
     if (path === "/grid/api" && discoverAll) {

@@ -6,11 +6,12 @@ import {
 } from "../src/device-session";
 import assert from "node:assert/strict";
 import { createServer, request as httpRequest } from "node:http";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import WebSocket from "ws";
 import { createDevHandler } from "../ops/dev-handler.mjs";
+import { DeviceMedia } from "../src/workspace-media";
 import { emuMiddleware } from "../src/middleware";
 
 async function fixture(basePath = "", allowedDevices: string[] = [], wrapper = false, discoverAll = false) {
@@ -18,6 +19,7 @@ async function fixture(basePath = "", allowedDevices: string[] = [], wrapper = f
   const origin = "http://127.0.0.1";
   const middleware = emuMiddleware({
     basePath,
+    workspaceDir: join(dir, "workspace"),
     allowedDevices,
     auth: { databasePath: join(dir, "accounts.db"), origin },
   });
@@ -52,6 +54,7 @@ async function fixture(basePath = "", allowedDevices: string[] = [], wrapper = f
     };
   };
   return {
+    dir,
     middleware,
     request,
     login,
@@ -85,7 +88,7 @@ test("every device surface denies anonymous requests before device discovery", a
         "stream.avcc",
         "action",
         "ws",
-        "workspace", "apps", "builds", "preset-current", "metrics", "quality", "crashes", "snapshot-default", "apk", "recording", "captures/id/file", "captures/id/logs", "captures/id/export", "builds/id/install",
+        "workspace", "apps", "builds", "preset-current", "metrics", "quality", "crashes", "snapshot-default", "apk", "recording", "captures/id/file", "captures/id/logs", "captures/id/export", "captures/id/share", "builds/id/install",
       ].map((x) => "/helper/unknown/" + x),
       "/future-api",
     ]) {
@@ -416,4 +419,46 @@ test("loopback reverse proxy and forged local headers never bypass HTTP or WebSo
     await new Promise<void>(resolve => proxy.close(() => resolve()));
     await h.close();
   }
+});
+
+
+test("capture capabilities cross auth only for one read-only file, including deployment wrappers", async () => {
+  const starts = mock.method(EmulatorSession.prototype, "start", async () => {});
+  try {
+    for (const wrapper of [false, true]) {
+      const h = await fixture(wrapper ? "" : "/emu", ["emulator-5554"], wrapper);
+      const file = join(h.dir, "capture.mp4"); writeFileSync(file, "0123456789");
+      const id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+      const scoped = `/helper/emulator-5554/captures/${id}`;
+      let available = true;
+      const media = mock.method(DeviceMedia.prototype, "sharedFile", (capture: string) =>
+        available && capture === id ? { path: file, format: "mp4" } : null);
+      try {
+        await h.middleware.attachDevice("emulator-5554");
+        const user = await h.login();
+        const headers = { Cookie: user.cookie, Origin: h.origin, "X-CSRF-Token": user.csrfToken };
+        assert.equal((await h.request(scoped + "/share", { method: "POST" })).status, 401);
+        assert.equal((await h.request(scoped + "/share", { method: "POST", headers: { Cookie: user.cookie } })).status, 403);
+        const created = await h.request(scoped + "/share", { method: "POST", headers });
+        assert.equal(created.status, 200);
+        const share = await created.json() as { url: string };
+        const publicUrl = new URL(share.url, h.url).href;
+        assert.equal((await fetch(publicUrl)).status, 200);
+        const range = await fetch(publicUrl + "/file", { headers: { Range: "bytes=2-5" } });
+        assert.equal(range.status, 206); assert.equal(await range.text(), "2345");
+        assert.equal(range.headers.get("referrer-policy"), "no-referrer");
+        assert.equal((await fetch(publicUrl + "/file", { method: "HEAD" })).headers.get("content-length"), "10");
+        assert.equal((await fetch(publicUrl + "/logs")).status, 404);
+        assert.equal((await fetch(publicUrl + "/file", { method: "POST" })).status, 405);
+        assert.equal((await h.request(scoped + "/file")).status, 401);
+        assert.equal((await h.request("/api")).status, 401);
+        assert.equal((await h.request(scoped + "/share", { method: "DELETE", headers })).status, 200);
+        assert.equal((await fetch(publicUrl)).status, 404);
+        const replacement = await (await h.request(scoped + "/share", { method: "POST", headers })).json() as { url: string };
+        assert.notEqual(replacement.url, share.url);
+        available = false;
+        assert.equal((await fetch(new URL(replacement.url, h.url))).status, 404);
+      } finally { media.mock.restore(); closeDeviceSession("emulator-5554"); await h.close(); }
+    }
+  } finally { starts.mock.restore(); }
 });
