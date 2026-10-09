@@ -14,6 +14,10 @@ const attached = new Set();
 const exec = promisify(execFile);
 const databasePath = process.env.SERVE_AVD_AUTH_DATABASE;
 const origin = process.env.SERVE_AVD_AUTH_ORIGIN;
+const host = process.env.SERVE_AVD_HOST ?? "127.0.0.1";
+const port = Number(process.env.SERVE_AVD_PORT ?? "3200");
+if (!Number.isInteger(port) || port < 1 || port > 65535)
+  throw new Error("SERVE_AVD_PORT must be an integer from 1 to 65535");
 if (!databasePath || !origin)
   throw new Error("Native auth database and external origin are required");
 const middleware = emuMiddleware({
@@ -66,8 +70,8 @@ server.on("upgrade", (req, socket, head) => {
   }
   middleware.handleUpgrade(req, socket, head);
 });
-server.listen(3201, "127.0.0.1", () =>
-  console.log("serve-avd: http://127.0.0.1:3201"),
+server.listen(port, host, () =>
+  console.log(`serve-avd: listening on ${host}:${port}`),
 );
 const stop = () => {
   clearInterval(discoveryTimer);

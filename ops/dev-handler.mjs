@@ -1,4 +1,4 @@
-// Deployment-specific routes share the middleware's authentication boundary.
+// Example wrapper routes share the middleware's authentication boundary.
 export function createDevHandler(middleware, serials, attached, { discoverAll = false } = {}) {
   if (!middleware.auth) throw new Error("Native authentication is required");
   const pathFor = (req) => (req.url ?? "/").split("?")[0];
@@ -29,8 +29,8 @@ export function createDevHandler(middleware, serials, attached, { discoverAll = 
           devices: [...attached].map((s) => ({
             serial: s,
             state: "device",
-            model: "Android TV",
-            isEmulator: true,
+            model: "ADB device",
+            isEmulator: s.startsWith("emulator-"),
             attached: true,
           })),
           avds: [],
@@ -42,7 +42,7 @@ export function createDevHandler(middleware, serials, attached, { discoverAll = 
       res.writeHead(403, { "Content-Type": "application/json" });
       res.end(
         JSON.stringify({
-          error: "This service is restricted to its configured emulator.",
+          error: "This service is restricted to its configured devices.",
         }),
       );
       return;

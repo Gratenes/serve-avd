@@ -6,3 +6,16 @@ dist/
 
 # Local credentials
 .env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+
+# Private local handoffs and design exports
+AUTH-HANDOFF.md
+*.zip
+.codebase-memory/
