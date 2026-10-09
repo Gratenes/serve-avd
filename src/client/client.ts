@@ -288,6 +288,7 @@ class DeviceView {
   private framesDecoded = 0;
   private framesPresented = 0;
   private pendingFrame: VideoFrame | null = null;
+  private retainedFrame: { source: VideoFrame | ImageBitmap; width: number; height: number } | null = null;
   private paintRaf: number | null = null;
   private presentationDrops = 0;
   /** Wall-clock submit time per frame timestamp, for the decode-latency readout. */
@@ -357,6 +358,9 @@ class DeviceView {
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       this.renderWidth = Math.max(1, Math.round(entry.contentRect.width * dpr));
       this.renderHeight = Math.max(1, Math.round(entry.contentRect.height * dpr));
+      // Static screens may never emit another frame after a layout change.
+      // Repaint the full-resolution source instead of stretching the old raster.
+      if (!this.closed && !this.suspended && this.retainedFrame) this.paintRetainedFrame();
     });
     this.resizeObserver.observe(this.surfaceWrap);
 
@@ -783,15 +787,26 @@ class DeviceView {
   private paintFrame(frame: VideoFrame): void {
     const width = frame.displayWidth || frame.codedWidth;
     const height = frame.displayHeight || frame.codedHeight;
-    const raster = this.rasterSize(width, height);
     this.noteFrameSize(width, height);
+    this.retainFrame(frame, width, height);
+    this.framesPresented++;
+  }
+
+  private retainFrame(source: VideoFrame | ImageBitmap, width: number, height: number): void {
+    this.retainedFrame?.source.close();
+    this.retainedFrame = { source, width, height };
+    this.paintRetainedFrame();
+  }
+
+  private paintRetainedFrame(): void {
+    const frame = this.retainedFrame;
+    if (!frame) return;
+    const raster = this.rasterSize(frame.width, frame.height);
     if (this.canvas.width !== raster.width || this.canvas.height !== raster.height) {
       this.canvas.width = raster.width;
       this.canvas.height = raster.height;
     }
-    this.ctx.drawImage(frame, 0, 0, raster.width, raster.height);
-    frame.close();
-    this.framesPresented++;
+    this.ctx.drawImage(frame.source, 0, 0, raster.width, raster.height);
   }
 
   private rasterSize(sourceWidth: number, sourceHeight: number): { width: number; height: number } {
@@ -814,14 +829,8 @@ class DeviceView {
         bitmap.close();
         return;
       }
-      const raster = this.rasterSize(bitmap.width, bitmap.height);
       this.noteFrameSize(bitmap.width, bitmap.height);
-      if (this.canvas.width !== raster.width || this.canvas.height !== raster.height) {
-        this.canvas.width = raster.width;
-        this.canvas.height = raster.height;
-      }
-      this.ctx.drawImage(bitmap, 0, 0, raster.width, raster.height);
-      bitmap.close();
+      this.retainFrame(bitmap, bitmap.width, bitmap.height);
     } catch {}
   }
 
@@ -1067,6 +1076,8 @@ class DeviceView {
     if (this.mjpegRetry !== null) clearTimeout(this.mjpegRetry);
     this.resizeObserver.disconnect();
     this.teardownDecoder();
+    this.retainedFrame?.source.close();
+    this.retainedFrame = null;
     this.ws?.close();
     if (this.img) this.img.src = "";
   }
