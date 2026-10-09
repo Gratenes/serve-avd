@@ -85,6 +85,7 @@ test("every device surface denies anonymous requests before device discovery", a
         "stream.avcc",
         "action",
         "ws",
+        "workspace", "apps", "builds", "preset-current", "metrics", "quality", "crashes", "snapshot-default", "apk", "recording", "captures/id/file", "captures/id/logs", "captures/id/export", "builds/id/install",
       ].map((x) => "/helper/unknown/" + x),
       "/future-api",
     ]) {
@@ -129,6 +130,10 @@ test("base path, CORS, CSRF, role checks and allowlist enforce authenticated bou
       "X-CSRF-Token": session.csrfToken,
       "Content-Type": "application/json",
     };
+    for (const route of ["workspace","apps","builds","metrics","quality","crashes","snapshot-default","captures/id/file","apk","recording"]) {
+      assert.equal((await h.request(`/helper/unknown/${route}`,{headers})).status,403,route);
+      assert.equal((await h.request(`/helper/unknown/${route}`,{method:"POST",headers:{Cookie:session.cookie},body:"{}"})).status,403,route);
+    }
     const boot = await h.request("/api", { headers });
     assert.equal(boot.status, 200);
     assert.equal(boot.headers.get("access-control-allow-origin"), null);

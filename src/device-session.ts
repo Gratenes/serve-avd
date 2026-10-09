@@ -36,6 +36,7 @@ import {
 } from "./event-log";
 import { formatEventLogPoint } from "./event-log-format";
 import { createDebug } from "./debug";
+import { CrashCollector, collectPerformance, parsePackageMetadata } from "./observability";
 
 const debug = createDebug("session");
 
@@ -140,15 +141,29 @@ export class EmulatorSession {
 
   private logcatProc: ChildProcess | null = null;
   private logcatRing: string[] = [];
+  private logcatHistory: {at:number;line:string}[] = [];
+  readonly crashes: CrashCollector;
+  private metricsAt = Date.now();
+  private metricsFrames = 0;
+  private metricsBytes = 0;
+  private metricsPending:Promise<import("./workspace-types").PerformanceSample>|null=null;
+  private metricsCached:import("./workspace-types").PerformanceSample|null=null;
+  private crashSeen=new Set<string>();
   private readonly logcatSubscribers = new Set<(line: string) => void>();
   private logcatCarry = "";
 
+  private closeListeners=new Set<()=>void>();
+  onClose(listener:()=>void):()=>void {this.closeListeners.add(listener);return()=>this.closeListeners.delete(listener);}
   name = "";
 
   constructor(
     public readonly serial: string,
     options: SessionOptions = {},
   ) {
+    this.crashes = new CrashCollector(serial, report => {
+      recordEventLogEvent({device:serial,source:"server",kind:"crash",summary:`${report.packageName ?? "App"} crashed: ${report.exception}`,details:{crashId:report.id,packageName:report.packageName},status:"error"});
+      void this.enrichCrash(report);
+    });
     this.shell = new AdbShell(serial);
     this.injector = new InputInjector(serial, this.shell, () => this.rotation);
     this.video = new VideoCapture(serial, options, () => this.displaySize());
@@ -188,6 +203,7 @@ export class EmulatorSession {
     await this.injector.wake().catch(() => {});
     await this.shell.run("svc power stayon true").catch(() => {});
     this.video.start();
+    this.ensureLogcat();
     this.rotationTimer = setInterval(() => void this.pollRotation(), ROTATION_POLL_MS);
     debug(
       `session ${this.serial} started (${this.naturalWidth}x${this.naturalHeight} rotation=${this.rotation})`,
@@ -197,6 +213,8 @@ export class EmulatorSession {
   close(): void {
     if (this.phase !== "running") return;
     this.phase = "stopped";
+    for(const listener of this.closeListeners)listener();
+    this.closeListeners.clear();
     if (this.rotationTimer) clearInterval(this.rotationTimer);
     if (this.stallTimer) clearTimeout(this.stallTimer);
     this.stallTimer = null;
@@ -204,6 +222,7 @@ export class EmulatorSession {
     this.hidSockets.clear();
     this.video.stop();
     this.stopLogcat();
+    this.crashes.close();
     this.shell.close();
   }
 
@@ -407,7 +426,7 @@ export class EmulatorSession {
     this.ensureLogcat();
     const cleanup = () => {
       this.logcatSubscribers.delete(listener);
-      if (this.logcatSubscribers.size === 0) this.stopLogcat();
+      // Crash monitoring remains active independently of the Logs tab.
     };
     res.on("close", cleanup);
     res.on("error", cleanup);
@@ -426,13 +445,17 @@ export class EmulatorSession {
       this.logcatCarry = lines.pop() ?? "";
       for (const line of lines) {
         if (!line.trim()) continue;
+        this.logcatHistory.push({at:Date.now(),line});
+        this.logcatHistory = this.logcatHistory.filter(item => item.at >= Date.now()-35*60_000).slice(-10_000);
+        if(!this.crashSeen.has(line)){this.crashes.feed(line);this.crashSeen.add(line);if(this.crashSeen.size>2000)this.crashSeen.delete(this.crashSeen.values().next().value!);}
         this.logcatRing.push(line);
         if (this.logcatRing.length > LOGCAT_RING_MAX) this.logcatRing.shift();
         for (const cb of this.logcatSubscribers) cb(line);
       }
     });
+    proc.on("error", () => {});
     proc.on("exit", () => {
-      if (this.logcatProc === proc) this.logcatProc = null;
+      if (this.logcatProc === proc) { this.logcatProc = null; if(this.phase === "running") { const retry=setTimeout(()=>this.ensureLogcat(),1000);retry.unref(); } }
     });
   }
 
@@ -445,6 +468,28 @@ export class EmulatorSession {
         proc.kill("SIGKILL");
       } catch {}
     }
+  }
+
+  logsBetween(start = 0, end = Date.now()): {at:number;line:string}[] { return this.logcatHistory.filter(item=>item.at>=start && item.at<=end); }
+
+  private async enrichCrash(report: import("./workspace-types").CrashReport): Promise<void> {
+    if(report.packageName && /^[\w.]+$/.test(report.packageName)) {
+      const info=parsePackageMetadata(report.packageName,await this.shell.run(`dumpsys package ${report.packageName}`).catch(()=>""));
+      report.versionName=info.versionName;report.versionCode=info.versionCode;
+    }
+    report.apiLevel=await this.shell.run("getprop ro.build.version.sdk").catch(()=>"");
+  }
+  async performance(): Promise<import("./workspace-types").PerformanceSample> {
+    if(this.metricsPending)return this.metricsPending;
+    if(this.metricsCached && Date.now()-Date.parse(this.metricsCached.timestamp)<2000)return this.metricsCached;
+    this.metricsPending=this.samplePerformance();try{this.metricsCached=await this.metricsPending;return this.metricsCached;}finally{this.metricsPending=null;}
+  }
+  private async samplePerformance(): Promise<import("./workspace-types").PerformanceSample> {
+    const now=Date.now(),elapsed=Math.max(.1,(now-this.metricsAt)/1000);
+    const counters={fps:(this.video.framesEmitted-this.metricsFrames)/elapsed,mbps:(this.video.bytesEmitted-this.metricsBytes)*8/elapsed/1e6};
+    this.metricsAt=now;this.metricsFrames=this.video.framesEmitted;this.metricsBytes=this.video.bytesEmitted;
+    const app=await this.injector.foregroundApp().catch(()=>null);
+    return collectPerformance(this.shell,app?.packageName??null,counters);
   }
 
   // ── Input WebSocket ──────────────────────────────────────────────────────

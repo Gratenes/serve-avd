@@ -935,7 +935,7 @@ export async function runAction(ctx: ActionContext, name: string, params: Action
     throw new ActionError(`'${name}' needs an emulator (adb emu console) — ${ctx.serial} is a physical device`, "unsupported");
   }
   try {
-    return await spec.run(ctx, params ?? {});
+    return await spec.run({ ...ctx, record(entry) { return ctx.record({ ...entry, details: { ...entry.details, replay: { action: name, params } } }); } }, params ?? {});
   } catch (err) {
     if (!(err instanceof ActionError && err.code === "bad_request")) {
       ctx.record({

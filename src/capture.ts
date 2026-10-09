@@ -94,6 +94,7 @@ export class VideoCapture {
 
   /** Total frames emitted (diagnostics, and the stall watchdog's clock). */
   framesEmitted = 0;
+  bytesEmitted = 0;
   private lastFrameAt = 0;
   private lastJoinRestart = 0;
 
@@ -294,6 +295,7 @@ export class VideoCapture {
   }
 
   private onChunk(chunk: Buffer): void {
+    this.bytesEmitted += chunk.length;
     if (this.settleTimer) {
       clearTimeout(this.settleTimer);
       this.settleTimer = null;

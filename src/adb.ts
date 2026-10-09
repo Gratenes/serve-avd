@@ -211,8 +211,8 @@ export function listAvds(): Promise<string[]> {
 }
 
 /** Launch an AVD headfully, detached from this process. */
-export function launchAvd(name: string): void {
-  const child = spawn(emulatorPath(), ["-avd", name], {
+export function launchAvd(name: string, options: {snapshot?:string|null} = {}): void {
+  const child = spawn(emulatorPath(), ["-avd", name, ...(options.snapshot ? ["-snapshot",options.snapshot] : [])], {
     detached: true,
     stdio: "ignore",
   });
