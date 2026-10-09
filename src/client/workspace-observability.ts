@@ -934,7 +934,7 @@ export class WorkspaceObservability {
     if (!name?.trim()) return;
     this.options.onSaveMacro?.(steps, name.trim());
     this.options.onNotice(
-      `Saved ${steps.length} steps for ${this.retainedNames.get(serial) ?? serial}. Excluded ${excluded} settings, artifacts, and other-device events.`,
+      `Saved ${steps.length} steps for ${this.retainedNames.get(serial) ?? serial}. Excluded ${excluded} settings, artifacts, unsupported input, and other-device events.`,
     );
   }
   private async exportRepro(events: EventLogEntry[]): Promise<void> {

@@ -65,7 +65,21 @@ export function rangeToMacro(
       sequence.push({ kind: "KEY", value: action.code, waitMs: 0 });
     else if (action?.action === "text")
       sequence.push({ kind: "TEXT", value: String(action.text), waitMs: 0 });
-    else if (action?.action === "open")
+    else if (action?.action === "scroll") {
+      const body = {
+        dx: action.dx,
+        dy: action.dy,
+        x: action.x ?? 0.5,
+        y: action.y ?? 0.5,
+      };
+      sequence.push({
+        kind: "INPUT",
+        value: JSON.stringify(body),
+        tag: 11,
+        body,
+        waitMs: 0,
+      });
+    } else if (action?.action === "open")
       sequence.push({ kind: "LINK", value: String(action.url), waitMs: 0 });
     else if (action?.action === "tap") {
       duration = Math.min(5000, Math.max(0, Number(action.durationMs) || 0));

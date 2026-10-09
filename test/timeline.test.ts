@@ -96,3 +96,13 @@ test("real ZIP has valid UTF8 entries, CRCs and safe paths", async () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("timeline wheel events replay native scroll input with the same deltas and position", () => {
+  const result = rangeToMacro(
+    [event(1, 1000, "scroll", { dx: 0, dy: -80, x: 0.25, y: 0.75 })],
+    "tv",
+  );
+  assert.equal(result.excluded, 0);
+  assert.equal(result.steps[0]!.tag, 11);
+  assert.deepEqual(result.steps[0]!.body, { dx: 0, dy: -80, x: 0.25, y: 0.75 });
+});
