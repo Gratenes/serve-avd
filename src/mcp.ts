@@ -17,6 +17,8 @@ import { flattenAx, axScreenSize, type AxDump, type AxNode } from "./ax";
 import { BUTTONS } from "./keymap";
 import { ORIENTATIONS } from "./input";
 import { startServer, type RunningServer } from "./server";
+import { configuredAuth } from "./auth-cli";
+import type { AuthOptions } from "./auth";
 import { formatEventLogLine } from "./event-log-format";
 
 const LATEST_PROTOCOL = "2025-06-18";
@@ -152,6 +154,8 @@ export interface McpServerOptions {
   device?: string;
   /** Host the preview server in this process too. */
   serve?: boolean;
+  /** Native session authentication for the preview HTTP/WS server. */
+  auth?: AuthOptions | false;
   port?: number;
   version: string;
   /** Resolve device args → serials, booting AVDs as needed (used with --serve). */
@@ -170,12 +174,17 @@ export interface McpServer {
 export async function createMcpServer(options: McpServerOptions): Promise<McpServer> {
   let running: RunningServer | null = null;
   if (options.serve) {
+    // Resolve partial configuration outside the fallback path: hosted preview fails closed.
+    const auth = options.auth === undefined ? configuredAuth() : options.auth;
     try {
+      running = await startServer({ port: options.port ?? 3200, strictPort: options.port !== undefined, auth });
       const serials = options.resolveDevices ? await options.resolveDevices(options.device ? [options.device] : []) : [];
-      running = await startServer({ port: options.port ?? 3200, strictPort: options.port !== undefined });
       for (const serial of serials) await running.attach(serial);
       log(`preview server at http://${running.host}:${running.port} (${serials.length} device${serials.length === 1 ? "" : "s"})`);
     } catch (err) {
+      running?.close();
+      running = null;
+      if (auth) throw err;
       log(`could not start the preview server: ${err instanceof Error ? err.message : String(err)}`);
     }
   }

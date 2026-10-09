@@ -219,3 +219,47 @@ test('inspector search and log streams follow the selected device', async () => 
     assert.deepEqual(h.errors,[]);
   } finally { await h.close(); }
 });
+
+
+test('X and eye hide previews only in this browser and discovery preserves visibility', async () => {
+  const h = await harness({width:1440,height:1000});
+  try {
+    const tv = h.page.locator('.device[data-device="tv"]');
+    await tv.getByRole('button', {name:'Hide from workspace',exact:true}).click();
+    assert.equal(await tv.isVisible(), false);
+    const show = h.page.getByRole('button', {name:'Show Living Room TV',exact:true});
+    assert.equal(await show.getAttribute('aria-pressed'), 'false');
+    assert.equal(await h.page.locator('.rail-row[data-device="tv"]').count(), 1);
+    await Promise.all([h.page.waitForResponse(response => response.url().endsWith('/grid')),
+      h.page.getByRole('button', {name:'Refresh devices',exact:true}).click()]);
+    assert.equal(await tv.isVisible(), false);
+    const second = await h.page.context().newPage();
+    await second.goto(h.page.url());
+    await second.locator('.device[data-device="tv"]').waitFor({state:'visible'});
+    await second.close();
+    await show.click();
+    assert.equal(await tv.isVisible(), true);
+    assert.equal(await h.page.getByRole('button', {name:'Hide Living Room TV',exact:true}).getAttribute('aria-pressed'), 'true');
+    assert.ok(!h.requests.includes('/start'));
+    assert.deepEqual(h.errors, []);
+  } finally { await h.close(); }
+});
+
+test('device discovery adds connected devices and removes disconnected devices without reload', async () => {
+  const h = await harness({width:1440,height:1000});
+  try {
+    const extra = {...h.devices[0], device:'new-phone', name:'New Phone'};
+    for (const key of Object.keys(extra).filter(key => key.endsWith('Endpoint'))) extra[key] = extra[key].replace('/phone/', '/new-phone/');
+    h.devices.push(extra);
+    await h.page.getByRole('button', {name:'Refresh devices',exact:true}).click();
+    await h.page.getByRole('button', {name:'Select New Phone',exact:true}).waitFor();
+    assert.equal(await h.page.locator('.device:visible').count(), 3);
+    await h.page.getByRole('button', {name:'Select New Phone',exact:true}).click();
+    h.devices.pop();
+    await h.page.getByRole('button', {name:'Refresh devices',exact:true}).click();
+    await h.page.locator('.device[data-device="new-phone"]').waitFor({state:'detached'});
+    assert.equal(await h.page.locator('.device:visible').count(), 2);
+    assert.equal(await h.page.locator('.device.selected-device').count(), 1);
+    assert.deepEqual(h.errors, []);
+  } finally { await h.close(); }
+});

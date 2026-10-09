@@ -8,7 +8,12 @@ import { writeFileSync, chmodSync, mkdirSync, readFileSync } from "fs";
 mkdirSync("dist", { recursive: true });
 
 const pkg = JSON.parse(readFileSync("package.json", "utf8"));
-const define = { __SERVE_AVD_VERSION__: JSON.stringify(pkg.version) };
+const fontCss = [["IBM Plex Sans", "ibm-plex-sans", [400, 500, 600]], ["IBM Plex Mono", "ibm-plex-mono", [400, 500]]]
+  .flatMap(([family, file, weights]) => weights.map(weight => {
+    const data = readFileSync(`src/client/fonts/${file}-${weight}.woff2`).toString("base64");
+    return `@font-face{font-family:"${family}";font-style:normal;font-weight:${weight};font-display:swap;src:url(data:font/woff2;base64,${data}) format("woff2")}`;
+  })).join("\n");
+const define = { __SERVE_AVD_VERSION__: JSON.stringify(pkg.version), __AUTH_FONT_CSS__: JSON.stringify(fontCss) };
 
 const nodeCommon = {
   platform: "node",
@@ -18,7 +23,7 @@ const nodeCommon = {
   logLevel: "info",
   define,
   // Keep real dependencies external — they're declared in package.json.
-  external: ["ws", "commander"],
+  external: ["ws", "commander", "better-sqlite3", "@node-rs/argon2"],
 };
 
 // CLI entry (ESM, executable).
@@ -96,11 +101,6 @@ for (const family of ["ibm-plex-sans", "ibm-plex-mono"]) {
 }
 
 // Embed the supplied design's fonts so the preview also works offline and behind Access.
-const fontCss = [["IBM Plex Sans", "ibm-plex-sans", [400, 500, 600]], ["IBM Plex Mono", "ibm-plex-mono", [400, 500]]]
-  .flatMap(([family, file, weights]) => weights.map(weight => {
-    const data = readFileSync(`src/client/fonts/${file}-${weight}.woff2`).toString("base64");
-    return `@font-face{font-family:"${family}";font-style:normal;font-weight:${weight};font-display:swap;src:url(data:font/woff2;base64,${data}) format("woff2")}`;
-  })).join("\n");
 writeFileSync("dist/client.css", fontCss + "\n" + ["client.css", "inspector.css", "workspace-remote.css"].map(name => readFileSync(`src/client/${name}`, "utf8")).join("\n"));
 
 console.log("build complete");

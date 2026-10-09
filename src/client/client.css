@@ -56,7 +56,8 @@ input[type=range], input[type=checkbox] { accent-color: var(--accent); }
 .rail-row .btn { background: transparent; border: 0; }
 .rail-grip { width: 16px; cursor: grab; color: #5a6067; }
 .rail-grip svg { width: 12px; }
-.rail-eye { width: 28px; margin-right: 3px; }
+.rail-eye { width: 32px; height: 32px; margin-right: 4px; }
+.rail-eye svg { width: 16px; height: 16px; }
 .rail-select { min-width: 0; flex: 1; color: inherit; text-align: left; padding: 10px 4px; border: 0; background: transparent; }
 .rail-name { display: flex; align-items: center; gap: 7px; }
 .rail-name strong { font-size: 12px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -86,8 +87,8 @@ input[type=range], input[type=checkbox] { accent-color: var(--accent); }
 .remote-badge { padding: 2px 6px; background: var(--accent); color: #06281c; font-size: 9px; font-weight: 700; border-radius: 99px; display: none; }
 .selected-device .remote-badge { display: block; }
 .device-head-actions { display: flex; gap: 0; margin-left: auto; }
-.device-head-actions .btn { width: 26px; height: 26px; background: transparent; border: 0; }
-.device-head-actions svg { width: 14px; height: 14px; }
+.device-head-actions .btn { width: 30px; height: 30px; background: transparent; border: 0; }
+.device-head-actions svg { width: 15px; height: 15px; }
 .device-chips { display: flex; align-items: center; gap: 6px; order: 5; width: 100%; }
 .chip { font: 10px var(--mono); color: #7c838b; }
 .chip-status::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 99px; background: #5a6067; margin-right: 5px; }
@@ -334,3 +335,13 @@ summary { cursor: pointer; color: var(--text-dim); font-size: 11px; padding: 8px
   color: var(--text-dim);
   padding: 1px 0;
 }
+
+/* Account controls share the workspace toolbar and remain usable on mobile. */
+.account-menu { position: relative; font-size: 12px; }
+.account-menu summary { cursor: pointer; padding: 8px; max-width: 180px; overflow-wrap: anywhere; }
+.account-menu summary:focus-visible { outline: 2px solid #b6c8ff; outline-offset: 2px; }
+.account-menu-items { position: absolute; right: 0; top: 100%; z-index: 20; display: grid; gap: 12px; padding: 16px; min-width: 210px; background: #202228; border: 1px solid #41434a; border-radius: 10px; box-shadow: 0 8px 28px #0008; }
+.account-menu-items a { color: #c4d2ff; text-decoration: none; padding: 6px 0; }
+.auth-expired { display: grid; place-content: center; gap: 16px; min-height: 70vh; }
+.auth-expired a { color: #c4d2ff; text-decoration: none; }
+@media (max-width: 700px) { .account-menu summary { max-width: 100px; font-size: 11px; } }

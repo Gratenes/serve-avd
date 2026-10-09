@@ -20,6 +20,8 @@
  * for input and live streams.
  */
 import type { IncomingMessage, ServerResponse } from "http";
+import { AuthService, type AuthOptions } from "./auth";
+export { AuthService, type AuthOptions } from "./auth";
 import type { Socket } from "net";
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
@@ -63,6 +65,10 @@ export interface PreviewInitialState {
 export interface EmuMiddlewareOptions {
   /** Mount path, e.g. "/.emu". Default "/" (serve at the root). */
   basePath?: string;
+  /** Persistent authentication; false explicitly enables unauthenticated local use. */
+  auth?: AuthOptions | false;
+  /** Only these device serials may be attached or accessed. */
+  allowedDevices?: string[];
   /** Stream codec preference surfaced to the client: "auto" (default) or "mjpeg". */
   codec?: "auto" | "mjpeg";
   /** Initial preview UI state. */
@@ -85,6 +91,8 @@ export interface EmuMiddleware {
   /** Serials this middleware has attached sessions for (or will list in /api). */
   attachDevice(serial: string): Promise<void>;
   attachedSerials(): string[];
+  /** Shared boundary for deployment wrapper routes. Run handle before overrides. */
+  auth?: AuthService;
 }
 
 // ── Assets ─────────────────────────────────────────────────────────────────
@@ -93,11 +101,11 @@ function assetsDir(): string {
   return dirname(fileURLToPath(import.meta.url));
 }
 
-let cachedHtml: { codec: string; initial: string; html: string } | null = null;
+let cachedHtml: { authEnabled: boolean; base: string; codec: string; initial: string; html: string } | null = null;
 
-function previewHtml(base: string, codec: string, initialState: PreviewInitialState | undefined): string {
+function previewHtml(base: string, codec: string, initialState: PreviewInitialState | undefined, authEnabled = false): string {
   const initial = JSON.stringify(initialState ?? {});
-  if (cachedHtml && cachedHtml.codec === codec && cachedHtml.initial === initial) return cachedHtml.html;
+  if (cachedHtml && cachedHtml.authEnabled === authEnabled && cachedHtml.base === base && cachedHtml.codec === codec && cachedHtml.initial === initial) return cachedHtml.html;
   const dir = assetsDir();
   let js = "";
   let css = "";
@@ -108,7 +116,7 @@ function previewHtml(base: string, codec: string, initialState: PreviewInitialSt
     debug("client assets missing", err);
     return `<!doctype html><meta charset="utf-8"><title>serve-avd</title><body style="font-family:system-ui;background:#0c0d10;color:#e8e8ea;display:grid;place-items:center;height:100vh;margin:0"><div><h1>serve-avd</h1><p>Client assets not built. Run <code>npm run build</code>.</p></div>`;
   }
-  const boot = JSON.stringify({ basePath: base, codec, initialState: initialState ?? {}, version: VERSION });
+  const boot = JSON.stringify({ basePath: base, authEnabled, codec, initialState: initialState ?? {}, version: VERSION });
   const html = `<!doctype html>
 <html lang="en">
 <head>
@@ -124,7 +132,7 @@ function previewHtml(base: string, codec: string, initialState: PreviewInitialSt
 <script>${js}</script>
 </body>
 </html>`;
-  cachedHtml = { codec, initial, html };
+  cachedHtml = { authEnabled, base, codec, initial, html };
   return html;
 }
 
@@ -133,6 +141,22 @@ function previewHtml(base: string, codec: string, initialState: PreviewInitialSt
 function normalizeBase(basePath: string | undefined): string {
   const trimmed = (basePath ?? "/").replace(/^\/+/, "").replace(/\/+$/, "");
   return trimmed === "" ? "" : `/${trimmed}`;
+}
+
+/** Suppress legacy wildcard CORS on every protected nested response. */
+function sameOriginResponse(res: ServerResponse): void {
+  for (const name of res.getHeaderNames()) {
+    if (name.toLowerCase().startsWith("access-control-")) res.removeHeader(name);
+  }
+  const setHeader = res.setHeader.bind(res);
+  res.setHeader = (name, value) => name.toLowerCase().startsWith("access-control-") ? res : setHeader(name, value);
+  const writeHead = res.writeHead.bind(res);
+  res.writeHead = ((status: number, messageOrHeaders?: string | Record<string, unknown>, headers?: Record<string, unknown>) => {
+    const clean = (value: Record<string, unknown> | undefined) => value && Object.fromEntries(Object.entries(value).filter(([name]) => !name.toLowerCase().startsWith("access-control-")));
+    return typeof messageOrHeaders === "string"
+      ? writeHead(status, messageOrHeaders, clean(headers) as never)
+      : writeHead(status, clean(messageOrHeaders) as never);
+  }) as ServerResponse["writeHead"];
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
@@ -175,7 +199,7 @@ function readBody(req: IncomingMessage, limit = 1024 * 1024): Promise<Buffer> {
 }
 
 /** Adapt a `ws` socket to the minimal HidSocket surface. */
-function wsHidSocket(ws: WsSocket): HidSocket {
+function wsHidSocket(ws: WsSocket, authorized: () => boolean = () => true): HidSocket {
   return {
     send(data: Buffer) {
       if (ws.readyState === ws.OPEN) ws.send(data);
@@ -183,6 +207,8 @@ function wsHidSocket(ws: WsSocket): HidSocket {
     on(event: "message" | "close" | "error", cb: (data: Buffer) => void) {
       if (event === "message") {
         ws.on("message", (data) => {
+          try { if (!authorized()) { ws.close(4401, "Session expired"); return; } }
+          catch { ws.terminate(); return; }
           const buf = Buffer.isBuffer(data)
             ? data
             : Array.isArray(data)
@@ -218,6 +244,11 @@ function parseHelperPath(rel: string): HelperTarget | null {
 export function emuMiddleware(options: EmuMiddlewareOptions = {}): EmuMiddleware {
   const base = normalizeBase(options.basePath);
   const codec = options.codec ?? "auto";
+  const auth = options.auth ? new AuthService(options.auth, base) : undefined;
+  const allowed = options.allowedDevices ? new Set(options.allowedDevices) : undefined;
+  const checkDevice = (serial: string) => {
+    if (allowed && !allowed.has(serial)) throw new Error("Device is not allowlisted");
+  };
   const wss = new WebSocketServer({ noServer: true });
   const attached = new Set<string>();
 
@@ -242,11 +273,13 @@ export function emuMiddleware(options: EmuMiddlewareOptions = {}): EmuMiddleware
   };
 
   const attachDevice = async (serial: string): Promise<void> => {
+    checkDevice(serial);
     await getDeviceSession(serial, options.sessionOptions);
     attached.add(serial);
   };
 
   const sessionFor = async (serial: string) => {
+    checkDevice(serial);
     const session = await getDeviceSession(serial, options.sessionOptions);
     attached.add(serial);
     return session;
@@ -266,6 +299,15 @@ export function emuMiddleware(options: EmuMiddlewareOptions = {}): EmuMiddleware
     if (base !== "" && pathname !== base && !pathname.startsWith(`${base}/`)) return notMine();
     const rel = base === "" ? pathname : pathname.slice(base.length) || "/";
 
+    if (auth) {
+      sameOriginResponse(res);
+      if (await auth.handle(req, res)) return;
+    }
+
+    const identity = auth?.resolve(req);
+    const authorized = () => !auth || !!identity && auth.valid(identity);
+    if (!authorized()) { sendJson(res, 401, { error: "authentication_required" }); return; }
+
     if (req.method === "OPTIONS") {
       res.writeHead(204, CORS);
       res.end();
@@ -273,9 +315,10 @@ export function emuMiddleware(options: EmuMiddlewareOptions = {}): EmuMiddleware
     }
 
     try {
+      if (auth && (rel === "/grid/api/start" || rel === "/grid/api/shutdown") && !auth.requireAdmin(req, res)) return;
       // Preview HTML
       if (rel === "/" || rel === "") {
-        sendHtml(res, previewHtml(base, codec, options.initialState));
+        sendHtml(res, previewHtml(base, codec, options.initialState, !!auth));
         return;
       }
 
@@ -334,7 +377,7 @@ export function emuMiddleware(options: EmuMiddlewareOptions = {}): EmuMiddleware
         const runningAvds = new Set<string>();
         for (const session of listDeviceSessions()) runningAvds.add(session.name.replace(/ /g, "_"));
         sendJson(res, 200, {
-          devices: devices.map((d) => ({
+          devices: devices.filter((d) => !allowed || allowed.has(d.serial)).map((d) => ({
             serial: d.serial,
             state: d.state,
             model: d.model,
@@ -342,7 +385,7 @@ export function emuMiddleware(options: EmuMiddlewareOptions = {}): EmuMiddleware
             attached: attached.has(d.serial),
             ...(attached.has(d.serial) ? deviceEntry(d.serial) : {}),
           })),
-          avds: avds.map((name) => ({ name, running: runningAvds.has(name) })),
+          avds: (allowed ? [] : avds).map((name) => ({ name, running: runningAvds.has(name) })),
         });
         return;
       }
@@ -355,8 +398,11 @@ export function emuMiddleware(options: EmuMiddlewareOptions = {}): EmuMiddleware
           sendJson(res, 400, { error: "device required" });
           return;
         }
+        if (allowed && !allowed.has(target)) { sendJson(res, 403, { error: "device_not_allowed" }); return; }
+        if (!authorized() || auth && !auth.requireAdmin(req, res)) return;
         const devices = await listDevices().catch(() => []);
         const bySerial = devices.find((d) => d.serial === target && d.state === "device");
+        if (!authorized()) { res.destroy(); return; }
         if (bySerial) {
           await sessionFor(bySerial.serial);
           sendJson(res, 200, { device: deviceEntry(bySerial.serial) });
@@ -368,6 +414,7 @@ export function emuMiddleware(options: EmuMiddlewareOptions = {}): EmuMiddleware
           sendJson(res, 404, { error: `No connected device or AVD named '${target}'` });
           return;
         }
+        if (!authorized()) { res.destroy(); return; }
         recordEventLogEvent({ source: "server", kind: "boot", summary: `Booting AVD ${avd}` });
         const known = new Set(devices.map((d) => d.serial));
         launchAvd(avd);
@@ -395,6 +442,7 @@ export function emuMiddleware(options: EmuMiddlewareOptions = {}): EmuMiddleware
       // Per-device helper endpoints
       const helper = parseHelperPath(rel);
       if (helper) {
+        if (allowed && !allowed.has(helper.serial)) { sendJson(res, 403, { error: "device_not_allowed" }); return; }
         let session;
         try {
           session = await sessionFor(helper.serial);
@@ -405,6 +453,7 @@ export function emuMiddleware(options: EmuMiddlewareOptions = {}): EmuMiddleware
           });
           return;
         }
+        if (!authorized()) { res.destroy(); return; }
         const endpoint = helper.endpoint.split("?")[0]!;
         switch (endpoint) {
           case "/stream.mjpeg":
@@ -448,6 +497,7 @@ export function emuMiddleware(options: EmuMiddlewareOptions = {}): EmuMiddleware
             const { action: _a, params: nested, ...spread } = body;
             const params = { ...spread, ...(nested && typeof nested === "object" ? nested : {}) };
             try {
+              if (!authorized()) { res.destroy(); return; }
               const result = await session.runAction(name, params);
               sendJson(res, 200, { ok: true, action: name, result });
             } catch (err) {
@@ -476,7 +526,10 @@ export function emuMiddleware(options: EmuMiddlewareOptions = {}): EmuMiddleware
   };
 
   const middleware = ((req: IncomingMessage, res: ServerResponse, next?: (err?: unknown) => void) => {
-    void handler(req, res, next);
+    void handler(req, res, next).catch(() => {
+      if (!res.headersSent) sendJson(res, 503, { error: "service_unavailable" });
+      else res.destroy();
+    });
   }) as EmuMiddleware;
 
   middleware.handleUpgrade = (req: IncomingMessage, socket: Socket, head: Buffer) => {
@@ -486,7 +539,17 @@ export function emuMiddleware(options: EmuMiddlewareOptions = {}): EmuMiddleware
       return;
     }
     const rel = base === "" ? pathname : pathname.slice(base.length);
-    const helper = parseHelperPath(rel);
+    let identity;
+    try { identity = auth?.authorizeUpgrade(req); } catch { socket.destroy(); return; }
+    if (auth && !identity) {
+      socket.end("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+      return;
+    }
+    let helper: HelperTarget | null;
+    try { helper = parseHelperPath(rel); } catch { socket.destroy(); return; }
+    if (helper && allowed && !allowed.has(helper.serial)) {
+      socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n"); return;
+    }
     if (!helper || helper.endpoint.split("?")[0] !== "/ws") {
       socket.destroy();
       return;
@@ -499,12 +562,18 @@ export function emuMiddleware(options: EmuMiddlewareOptions = {}): EmuMiddleware
         socket.destroy();
         return;
       }
+      if (auth && identity && !auth.valid(identity)) { socket.destroy(); return; }
       wss.handleUpgrade(req, socket, head, (ws) => {
-        session.attachHidSocket(wsHidSocket(ws));
+        if (auth && identity) {
+          const untrack = auth.track(identity, () => ws.close(4401, "Session expired"));
+          ws.once("close", untrack);
+        }
+        session.attachHidSocket(wsHidSocket(ws, () => !auth || !!identity && auth.valid(identity)));
       });
-    })();
+    })().catch(() => socket.destroy());
   };
 
+  middleware.auth = auth;
   middleware.attachDevice = attachDevice;
   middleware.attachedSerials = () => [...attached];
 
