@@ -1,0 +1,126 @@
+/* Shared floating remote. The stage owns the containing block. */
+.workspace-remote {
+  position: absolute;
+  right: 20px;
+  bottom: 20px;
+  width: 252px;
+  max-width: calc(100% - 16px);
+  max-height: calc(100% - 16px);
+  overflow: auto;
+  z-index: 5;
+  background: #17191c;
+  border: 1px solid #33383f;
+  border-radius: 14px;
+  box-shadow: 0 18px 40px #0008, 0 2px 6px #0006;
+  color: #c9ced3;
+  user-select: none;
+  scrollbar-width: thin;
+}
+
+.workspace-remote[hidden], .workspace-remote-panel[hidden] { display: none; }
+.workspace-remote *, .workspace-remote *::before, .workspace-remote *::after { box-sizing: border-box; }
+.workspace-remote button {
+  font: inherit;
+  cursor: pointer;
+  min-width: 44px;
+  min-height: 44px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  color: inherit;
+  border: 1px solid #2c3036;
+  background: #1f2226;
+  border-radius: 8px;
+  touch-action: manipulation;
+}
+.workspace-remote svg { width: 17px; height: 17px; flex-shrink: 0; }
+.workspace-remote button:hover:not(:disabled) { color: #eceef0; background: #2a2e33; }
+.workspace-remote button:active:not(:disabled) { background: #343a40; }
+.workspace-remote button:disabled { opacity: .4; cursor: not-allowed; }
+.workspace-remote button:focus-visible, .workspace-remote-panel:focus-visible {
+  outline: 2px solid #6ee7b7;
+  outline-offset: -2px;
+}
+.workspace-remote-header {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px 4px;
+  border-bottom: 1px solid #262a2f;
+}
+.workspace-remote .workspace-remote-grip,
+.workspace-remote .workspace-remote-collapse {
+  width: 44px;
+  flex: 0 0 44px;
+  color: #7c838b;
+  border: 0;
+  background: transparent;
+}
+.workspace-remote .workspace-remote-grip { cursor: grab; touch-action: none; }
+.workspace-remote.is-dragging { box-shadow: 0 28px 60px #000b; outline: 1px solid #6ee7b7; }
+.workspace-remote.is-dragging .workspace-remote-grip { cursor: grabbing; color: #6ee7b7; }
+.workspace-remote .workspace-remote-target {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  gap: 6px;
+  padding: 0 7px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #eceef0;
+}
+.workspace-remote-target-name { flex: 1; text-align: left; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.workspace-remote-target > svg { width: 12px; height: 12px; color: #a3a9b0; }
+.workspace-remote-status { width: 6px; height: 6px; border-radius: 50%; background: #7c838b; flex-shrink: 0; }
+.workspace-remote.is-connected .workspace-remote-status { background: #6ee7b7; }
+.workspace-remote-collapse > svg { transform: rotate(180deg); }
+.workspace-remote.is-collapsed .workspace-remote-collapse > svg { transform: none; }
+.workspace-remote.is-collapsed .workspace-remote-header { border-bottom: 0; }
+.workspace-remote-panel { padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+.workspace-remote-dpad {
+  align-self: center;
+  position: relative;
+  width: 160px;
+  height: 160px;
+  border-radius: 50%;
+  background: #1f2226;
+  border: 1px solid #2c3036;
+}
+.workspace-remote-dpad .workspace-remote-key { position: absolute; background: transparent; border: 0; }
+.workspace-remote-dpad-up { left: 56px; top: 3px; width: 46px; height: 44px; }
+.workspace-remote-dpad-down { left: 56px; bottom: 3px; width: 46px; height: 44px; }
+.workspace-remote-dpad-left { left: 3px; top: 56px; width: 44px; height: 46px; }
+.workspace-remote-dpad-right { right: 3px; top: 56px; width: 44px; height: 46px; }
+.workspace-remote-dpad .workspace-remote-dpad-center {
+  left: 50px;
+  top: 50px;
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  background: #2a2e33;
+  border: 1px solid #3a3f46;
+  color: #eceef0;
+  font-size: 12px;
+  font-weight: 600;
+}
+.workspace-remote-navigation { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.workspace-remote-bottom { display: flex; align-items: center; gap: 12px; }
+.workspace-remote-volume { display: flex; flex: 1; min-width: 0; border: 1px solid #2c3036; border-radius: 8px; overflow: hidden; }
+.workspace-remote-volume button { flex: 1; border: 0; border-radius: 0; }
+.workspace-remote-volume button + button { border-left: 1px solid #2c3036; }
+.workspace-remote .workspace-remote-power { flex: 0 0 44px; width: 44px; background: transparent; border-color: #4a2e30; color: #f2777a; }
+.workspace-remote-hint { margin: 0; font-size: 11px; color: #7c838b; line-height: 1.45; text-align: center; }
+
+@media (max-width: 700px), (pointer: coarse) and (max-height: 500px) {
+  .workspace-remote {
+    position: relative;
+    inset: auto !important;
+    width: 252px;
+    max-width: calc(100% - 24px);
+    max-height: none;
+    margin: 12px auto max(12px, env(safe-area-inset-bottom));
+    grid-column: 1 / -1;
+    flex-shrink: 0;
+  }
+  .workspace-remote .workspace-remote-grip { cursor: default; }
+}

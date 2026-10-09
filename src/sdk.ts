@@ -107,6 +107,10 @@ export class ServeAvdError extends Error {
 export interface ConnectOptions {
   /** Custom fetch (defaults to the global one). */
   fetch?: typeof fetch;
+  /** Session Cookie, configured Origin and X-CSRF-Token for a Node client. */
+  headers?: HeadersInit;
+  /** Browser session cookies (default: same-origin). */
+  credentials?: RequestCredentials;
 }
 
 // ── HTTP helpers ───────────────────────────────────────────────────────────
@@ -179,6 +183,7 @@ export class Device {
     }
     const body = (await res.json().catch(() => ({}))) as { ok?: boolean; result?: T; error?: string; message?: string };
     if (!res.ok || body.ok === false) {
+      if (res.status === 401 || res.status === 403) throw new ServeAvdError(body.message ?? body.error ?? `HTTP ${res.status}`, "http", res.status);
       const code = (body.error ?? "failed") as ActionErrorCode;
       throw new ServeAvdError(body.message ?? `HTTP ${res.status}`, ["bad_request", "not_found", "unsupported", "failed"].includes(code) ? code : "failed", res.status);
     }
@@ -424,8 +429,18 @@ export class ServeAvd {
 
   /** @internal */
   static async open(url: string, options: ConnectOptions): Promise<ServeAvd> {
-    const f = options.fetch ?? globalThis.fetch;
-    if (!f) throw new ServeAvdError("No fetch available — pass one in ConnectOptions", "network");
+    const transport = options.fetch ?? globalThis.fetch;
+    if (!transport) throw new ServeAvdError("No fetch available — pass one in ConnectOptions", "network");
+    const trustedOrigin = new URL(url).origin;
+    const f: Fetch = (input, init = {}) => {
+      const requestUrl = input instanceof Request ? input.url : String(input);
+      if (new URL(requestUrl).origin !== trustedOrigin) {
+        throw new ServeAvdError("Refusing to send session credentials to another origin", "http");
+      }
+      const headers = new Headers(options.headers);
+      new Headers(init.headers).forEach((value, name) => headers.set(name, value));
+      return transport(input, { ...init, headers, credentials: options.credentials ?? "same-origin", redirect: "error" });
+    };
     const origin = url.replace(/\/+$/, "");
     const info = await getJson<ServerInfo>(f, `${origin}/api`);
     return new ServeAvd(origin, info, f);
@@ -475,6 +490,7 @@ export class ServeAvd {
       body: JSON.stringify({ device: serialOrAvd }),
     });
     const body = (await res.json().catch(() => ({}))) as { device?: DeviceInfo; error?: string };
+    if (res.status === 401 || res.status === 403) throw new ServeAvdError(body.error ?? `HTTP ${res.status}`, "http", res.status);
     if (!res.ok || !body.device) throw new ServeAvdError(body.error ?? `attach failed: HTTP ${res.status}`, "failed", res.status);
     await this.refresh();
     return new Device(body.device, this.origin, this.f, this);

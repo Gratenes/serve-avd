@@ -600,11 +600,13 @@ export class EmulatorSession {
       }
     } catch (err) {
       debug(`hid message 0x${tag.toString(16)} failed:`, err);
+      const message = `Input failed: ${err instanceof Error ? err.message : String(err)}`;
       this.record({
         kind: "error",
-        summary: `Input failed: ${err instanceof Error ? err.message : String(err)}`,
+        summary: message,
         status: "error",
       });
+      this.notify({ kind: "input", ok: false, message });
     }
   }
 
