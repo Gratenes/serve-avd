@@ -78,7 +78,6 @@ test('disconnected commands are not replayed and unsent text is retained', async
     for (const ws of h.wss.clients) ws.close();
     await h.page.waitForTimeout(100);
     await selected.getByRole('button', {name:'Send', exact:true}).click();
-    await selected.getByText('Device controls', {exact:true}).click();
     await selected.locator('[title="Home"]').click();
     assert.equal(await selected.locator('textarea').inputValue(), 'retry me');
     await h.page.waitForTimeout(1200);
@@ -351,4 +350,38 @@ test('Focus repaints decoded frames and releases replaced or removed frame resou
     assert.deepEqual(await h.page.evaluate(() => window.closedFrames), [true,true]);
     assert.deepEqual(h.errors, []);
   } finally { await h.close(); }
+});
+
+test('selecting an emulator focuses keyboard input without a second click or screen ring', async () => {
+  const h = await harness({width:1440,height:1000});
+  try {
+    await h.page.getByRole('button',{name:'Select Living Room TV',exact:true}).click();
+    assert.equal(await h.page.evaluate(()=>document.activeElement?.closest('.device')?.getAttribute('data-device')), 'tv');
+    await h.page.keyboard.press('ArrowUp');
+    await waitForMessages(h,2);
+    assert.ok(h.messages.every(message=>message.device==='tv'));
+    const outline=await h.page.locator('.device.selected-device .screen-wrap').evaluate(el=>getComputedStyle(el).outlineStyle);
+    assert.equal(outline,'none');
+  } finally {await h.close();}
+});
+
+test('card selection and device dropdown focus the emulator without stealing form focus', async () => {
+  const h = await harness({width:1440,height:1000});
+  try {
+    await h.page.locator('.device[data-device="tv"] .device-title').click();
+    assert.equal(await h.page.evaluate(()=>document.activeElement?.closest('.device')?.getAttribute('data-device')),'tv');
+    await h.page.setViewportSize({width:390,height:844});
+    await h.page.locator('.device-selector').selectOption('phone');
+    assert.equal(await h.page.evaluate(()=>document.activeElement?.closest('.device')?.getAttribute('data-device')),'phone');
+    await h.page.setViewportSize({width:1440,height:1000});
+    const tv=h.page.locator('.device[data-device="tv"]');
+    await tv.locator('.text-entry summary').click();
+    await tv.locator('textarea').fill('keep this focus');
+    assert.equal(await tv.locator('textarea').evaluate(el=>el===document.activeElement),true);
+    await h.page.keyboard.type(' here');
+    assert.equal(await tv.locator('textarea').inputValue(),'keep this focus here');
+    assert.equal(h.messages.length,0);
+    await tv.getByRole('button',{name:'Focus this device',exact:true}).click();
+    assert.equal(await tv.locator('.screen-wrap').evaluate(el=>el===document.activeElement),true);
+  } finally {await h.close();}
 });
