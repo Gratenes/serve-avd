@@ -31,21 +31,23 @@ It is a faithful Android port of [serve-sim](https://github.com/EvanBacon/serve-
 - Multiple emulators at once — boot and attach AVDs straight from the Devices panel.
 - Every command works headless (straight over adb) when no server is running, and through the server (shared event log, live viewers) when one is.
 
+### Device workspace
+
+The workspace has a connected-device rail, live preview cards, a floating TV remote, and a Controls/Logcat inspector. Choose **Focus**, **Split**, or **Stack** to arrange previews. Click a card or a device in the rail to select the remote and inspector target. Use the eye button to hide a preview without disconnecting it, and drag the rail handle (or use its arrow keys) to reorder devices. **Show all devices** restores hidden previews.
+
+The toolbar toggles the device list, remote, and inspector. Inspector controls are searchable and grouped into collapsible sections. Logcat supports text filtering, minimum severity, pause, and clearing the displayed log.
+
 ### TV remote
 
-For a TV, open **TV remote** below that device's preview. The remote controls
-only that device. Focus the remote panel to use arrow keys, Enter for OK, and
-Escape for Back; Tab moves between buttons, where Enter/Space activates the
-focused button. Controls are disabled until the input connection is ready and
-commands are not queued during reconnects. This uses the existing ADB device
-connection; it does not discover or pair with TVs. Button holding/repeat and
-voice input are not supported.
+The shared remote targets the selected, visible device. Focus its body to use arrow keys, Enter for OK, and Escape for Back; Tab moves between buttons, where Enter/Space activates the focused button. Use its target button to cycle devices. Drag the handle to move it, use arrow keys while the handle has focus, or double-click the handle to re-dock. The chevron collapses the remote.
+
+**Mirror input** sends remote button presses to all visible, connected previews. Screen taps, typing, and inspector actions still target their own device. On phones only the selected preview is visible, so mirror input affects that preview alone. Controls disable while disconnected or paused, and commands are never replayed on reconnect. This uses the existing ADB connection, without TV discovery/pairing, voice input, or held-button repeat.
 
 ### Using the preview on a phone
 
-Open the served URL in your mobile browser. The device selector chooses the preview and the target for Tools and Logs. On desktop, clicking or focusing a preview also selects it. Phones show one device at a time; inactive previews and previews in background tabs pause their streams.
+Open the served URL in your mobile browser. The device selector chooses the preview and inspector target. The device list and inspector become full-width panels, and the remote docks below the preview. Inactive and hidden previews, and previews in background tabs, pause their streams.
 
-Touch the preview to tap or drag. Additional fingers are ignored during a gesture. Open **Text input** to use your phone keyboard, then press **Send**; **Enter** and **Backspace** send those keys separately. Android's ADB text input supports ASCII characters only. Text entered in the panel stays there if disconnected so you can retry, and device commands are never replayed after reconnecting. Tools and Logs open a full-width panel on phones; **Close** returns to the preview.
+Touch the preview to tap or drag; additional fingers are ignored during a gesture. Open **Text input** to type with your phone keyboard, then press **Send**; **Enter** and **Backspace** send those keys separately. ADB text input supports ASCII only. Unsent panel text stays available after disconnection. **Device controls** retains phone navigation, rotation, theme, and screenshot actions.
 
 ## Why?
 

@@ -33,7 +33,7 @@ export async function harness(viewport = { width: 390, height: 844 }, codec = "m
     const path = req.url.split("?")[0];
     if (path === "/") {
       res.setHeader("content-type", "text/html");
-      res.end(`<!doctype html>
+      res.end(`<!doctype html><meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <link rel="stylesheet" href="/client.css"><div id="app"></div>
         <script>window.__SERVE_AVD__={basePath:"",initialState:{},version:"test"}</script>
@@ -68,7 +68,7 @@ export async function harness(viewport = { width: 390, height: 844 }, codec = "m
     const data = path === "/api" ? state : path === "/grid" ? {
       devices: devices.map((device) => ({ serial: device.device, model: device.name, state: "device", attached: true })),
       avds: [],
-    } : path === "/event-log" ? [] : { ok: true, result: [] };
+    } : path === "/event-log" ? [] : { ok: true, result: { snapshots: [] } };
     res.end(JSON.stringify(data));
   });
   const wss = new WebSocketServer({ server });
@@ -92,6 +92,7 @@ export async function harness(viewport = { width: 390, height: 844 }, codec = "m
     browser = await chromium.launch({ headless: true });
     const context = await browser.newContext({ viewport, hasTouch: true });
     const page = await context.newPage();
+    page.setDefaultTimeout(5_000);
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(`http://127.0.0.1:${server.address().port}`);

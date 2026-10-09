@@ -17,10 +17,10 @@ test('mobile preview fits narrow viewports and panes remain reachable', async ()
       const bounds = await h.page.locator('.device.selected-device .screen-wrap').boundingBox();
       assert.ok(bounds.width > 100 && bounds.x >= 0 && bounds.x + bounds.width <= viewport.width);
       assert.ok(bounds.y + bounds.height <= viewport.height, "Preview fits phone landscape height");
-      await h.page.getByRole('button', {name:'Devices', exact:true}).click();
-      assert.equal(await h.page.locator('.panes:visible').count(), 1);
-      await h.page.getByRole('button', {name:'Close', exact:true}).click();
-      assert.equal(await h.page.locator('.panes:visible').count(), 0);
+      await h.page.getByRole('button', {name:'Toggle device list', exact:true}).click();
+      assert.equal(await h.page.locator('.device-rail:visible').count(), 1);
+      await h.page.getByRole('button', {name:'Toggle device list', exact:true}).click();
+      assert.equal(await h.page.locator('.device-rail:visible').count(), 0);
       assert.deepEqual(h.errors, []);
     } finally { await h.close(); }
   }
@@ -31,7 +31,7 @@ test('mobile text, special keys and logs route to the selected device', async ()
   try {
     await h.page.locator('.device-selector').selectOption('tv');
     const selected = h.page.locator('.device.selected-device');
-    await selected.locator('summary').click();
+    await selected.locator('.text-entry summary').click();
     await selected.locator('textarea').fill('hello world');
     await selected.getByRole('button', {name:'Send', exact:true}).click();
     await selected.getByRole('button', {name:'Enter', exact:true}).click();
@@ -42,7 +42,8 @@ test('mobile text, special keys and logs route to the selected device', async ()
       {device:'tv',tag:6,body:{type:'up',code:'Enter'}},
     ]);
     assert.equal(await selected.locator('textarea').inputValue(), '');
-    await h.page.getByRole('button', {name:'Logs', exact:true}).click();
+    await h.page.getByRole('button', {name:'Toggle inspector', exact:true}).click();
+    await h.page.getByRole('button', {name:'Logcat', exact:true}).click();
     await h.page.waitForTimeout(100);
     assert.ok(h.requests.includes('/tv/logs'));
     assert.ok(!h.requests.includes('/phone/logs'));
@@ -72,11 +73,12 @@ test('disconnected commands are not replayed and unsent text is retained', async
   const h = await harness();
   try {
     const selected = h.page.locator('.device.selected-device');
-    await selected.locator('summary').click();
+    await selected.locator('.text-entry summary').click();
     await selected.locator('textarea').fill('retry me');
     for (const ws of h.wss.clients) ws.close();
     await h.page.waitForTimeout(100);
     await selected.getByRole('button', {name:'Send', exact:true}).click();
+    await selected.getByText('Device controls', {exact:true}).click();
     await selected.locator('[title="Home"]').click();
     assert.equal(await selected.locator('textarea').inputValue(), 'retry me');
     await h.page.waitForTimeout(1200);
@@ -155,22 +157,65 @@ test('backgrounded mobile remote disables controls and resumes without replay', 
   const h = await harness();
   try {
     await h.page.locator('.device-selector').selectOption('tv');
-    const tv = h.page.locator('.device.selected-device');
-    await tv.locator('.tv-remote-toggle').click();
+    const tv = h.page.locator('.workspace-remote');
     await h.page.evaluate(() => {
       Object.defineProperty(document, 'hidden', {configurable:true,get:()=>true});
       document.dispatchEvent(new Event('visibilitychange'));
     });
-    assert.equal(await tv.locator('.tv-remote-dpad-center').isDisabled(), true);
-    await tv.locator('.tv-remote-panel').dispatchEvent('keydown',{code:'Enter',key:'Enter'});
+    assert.equal(await tv.locator('.workspace-remote-dpad-center').isDisabled(), true);
+    await tv.locator('.workspace-remote-panel').dispatchEvent('keydown',{code:'Enter',key:'Enter'});
     await h.page.evaluate(() => {
       Object.defineProperty(document, 'hidden', {configurable:true,get:()=>false});
       document.dispatchEvent(new Event('visibilitychange'));
     });
-    assert.equal(await tv.locator('.tv-remote-dpad-center').isEnabled(), true);
+    assert.equal(await tv.locator('.workspace-remote-dpad-center').isEnabled(), true);
     assert.deepEqual(h.messages,[]);
-    await tv.locator('.tv-remote-dpad-center').click();
+    await tv.locator('.workspace-remote-dpad-center').click();
     await waitForMessages(h,1);
     assert.deepEqual(h.messages,[{device:'tv',tag:4,body:{button:'dpad-center'}}]);
+  } finally { await h.close(); }
+});
+
+test('workspace layouts, hiding every device and recovery keep selection valid', async () => {
+  const h = await harness({width:1440,height:1000});
+  try {
+    const devices = h.page.locator('.device:visible');
+    assert.equal(await devices.count(),2);
+    await h.page.getByRole('button',{name:'Focus',exact:true}).click();
+    assert.equal(await h.page.getByRole('button',{name:'Focus',exact:true}).getAttribute('aria-pressed'),'true');
+    await h.page.getByRole('button',{name:'Select Living Room TV',exact:true}).click();
+    assert.equal(await h.page.locator('.device.selected-device').getAttribute('data-device'),'tv');
+    await h.page.getByRole('button',{name:'Stack',exact:true}).click();
+    assert.equal(await devices.count(),2);
+    await h.page.getByRole('button',{name:'Split',exact:true}).click();
+    assert.equal(await devices.count(),2);
+    await h.page.getByRole('button',{name:'Hide Living Room TV',exact:true}).click();
+    assert.equal(await h.page.locator('.device.selected-device').getAttribute('data-device'),'phone');
+    await h.page.getByRole('button',{name:'Hide Pixel Phone',exact:true}).click();
+    assert.equal(await devices.count(),0);
+    assert.equal(await h.page.locator('.workspace-remote-dpad-center').isDisabled(),true);
+    await h.page.getByRole('button',{name:'Show all devices',exact:true}).click();
+    assert.equal(await devices.count(),2);
+    assert.equal(await h.page.locator('.device.selected-device').count(),1);
+    assert.deepEqual(h.errors,[]);
+  } finally { await h.close(); }
+});
+
+test('inspector search and log streams follow the selected device', async () => {
+  const h = await harness({width:1440,height:1000});
+  try {
+    await h.page.getByRole('button',{name:'Select Living Room TV',exact:true}).click();
+    await h.page.getByRole('searchbox',{name:'Find a control',exact:true}).fill('battery');
+    const groups=h.page.locator('.inspector-group:visible');
+    assert.equal(await groups.count(),1);
+    assert.equal(await groups.first().getAttribute('data-group'),'Battery');
+    await h.page.getByRole('button',{name:'Logcat',exact:true}).click();
+    await h.page.waitForTimeout(50);
+    assert.ok(h.requests.includes('/tv/logs'));
+    await h.page.getByRole('button',{name:'Select Pixel Phone',exact:true}).click();
+    await h.page.waitForTimeout(50);
+    assert.ok(h.requests.includes('/phone/logs'));
+    assert.match(await h.page.locator('.inspector-identity').innerText(),/Pixel Phone/);
+    assert.deepEqual(h.errors,[]);
   } finally { await h.close(); }
 });

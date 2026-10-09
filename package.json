@@ -42,6 +42,7 @@
     "dist/sdk.cjs",
     "dist/client.js",
     "dist/client.css",
+    "dist/font-licenses",
     "src/middleware.ts",
     "src/state.ts",
     "src/sdk.ts",

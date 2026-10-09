@@ -3,7 +3,7 @@
  * preview client into `dist/`. Run with `node build.mjs` (or `npm run build`).
  */
 import * as esbuild from "esbuild";
-import { copyFileSync, chmodSync, mkdirSync, readFileSync } from "fs";
+import { writeFileSync, chmodSync, mkdirSync, readFileSync } from "fs";
 
 mkdirSync("dist", { recursive: true });
 
@@ -90,6 +90,17 @@ await esbuild.build({
   define,
 });
 
-copyFileSync("src/client/client.css", "dist/client.css");
+mkdirSync("dist/font-licenses", { recursive: true });
+for (const family of ["ibm-plex-sans", "ibm-plex-mono"]) {
+  writeFileSync(`dist/font-licenses/${family}-OFL.txt`, readFileSync(`src/client/fonts/${family}-OFL.txt`));
+}
+
+// Embed the supplied design's fonts so the preview also works offline and behind Access.
+const fontCss = [["IBM Plex Sans", "ibm-plex-sans", [400, 500, 600]], ["IBM Plex Mono", "ibm-plex-mono", [400, 500]]]
+  .flatMap(([family, file, weights]) => weights.map(weight => {
+    const data = readFileSync(`src/client/fonts/${file}-${weight}.woff2`).toString("base64");
+    return `@font-face{font-family:"${family}";font-style:normal;font-weight:${weight};font-display:swap;src:url(data:font/woff2;base64,${data}) format("woff2")}`;
+  })).join("\n");
+writeFileSync("dist/client.css", fontCss + "\n" + ["client.css", "inspector.css", "workspace-remote.css"].map(name => readFileSync(`src/client/${name}`, "utf8")).join("\n"));
 
 console.log("build complete");
