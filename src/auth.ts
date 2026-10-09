@@ -157,7 +157,7 @@ export class AuthService {
       const version = this.db.pragma("user_version", {
         simple: true,
       }) as number;
-      if (version > 1) {
+      if (version > 2) {
         throw new Error("Unsupported auth database migration");
       }
       if (version < 1)
@@ -172,6 +172,9 @@ export class AuthService {
       PRAGMA user_version=1;`);
           })
           .immediate();
+      if (version < 2) this.db.transaction(() => {
+        this.db.exec("ALTER TABLE sessions ADD COLUMN persistent INTEGER NOT NULL DEFAULT 1; PRAGMA user_version=2;");
+      }).immediate();
     } catch (error) {
       this.db.close();
       throw error;
@@ -271,21 +274,21 @@ export class AuthService {
     for (const key of this.connections.keys())
       if (!this.session(key, false)) this.disconnect(key);
   }
-  private cookie(res: ServerResponse, token: string, clear = false) {
+  private cookie(res: ServerResponse, token: string, clear = false, persistent = true) {
     res.setHeader(
       "Set-Cookie",
-      `${this.cookieName}=${token}; Path=${this.cookiePath}; HttpOnly; SameSite=Lax${this.secure ? "; Secure" : ""}; Max-Age=${clear ? 0 : Math.floor(this.absolute / 1000)}`,
+      `${this.cookieName}=${token}; Path=${this.cookiePath}; HttpOnly; SameSite=Lax${this.secure ? "; Secure" : ""}${clear ? "; Max-Age=0" : persistent ? `; Max-Age=${Math.floor(this.absolute / 1000)}` : ""}`,
     );
   }
-  private issue(res: ServerResponse, user: UserRow) {
+  private issue(res: ServerResponse, user: UserRow, persistent = true) {
     const token = random(),
       now = Date.now();
     this.db
       .prepare(
-        "INSERT INTO sessions(session_hash,user_id,csrf,created,last_used,expires) VALUES(?,?,?,?,?,?)",
+        "INSERT INTO sessions(session_hash,user_id,csrf,created,last_used,expires,persistent) VALUES(?,?,?,?,?,?,?)",
       )
-      .run(digest(token), user.id, random(), now, now, now + this.absolute);
-    this.cookie(res, token);
+      .run(digest(token), user.id, random(), now, now, now + this.absolute, persistent ? 1 : 0);
+    this.cookie(res, token, false, persistent);
     return this.session(digest(token), false)!;
   }
   private json(res: ServerResponse, status: number, data: unknown) {
@@ -516,7 +519,7 @@ export class AuthService {
           this.disconnect(old.sessionHash);
         }
         this.db.prepare("DELETE FROM throttles WHERE key=?").run(keys[0]);
-        const identity = this.issue(res, user);
+        const identity = this.issue(res, user, data.remember !== false);
         this.audit(user.id, "login", user.id);
         this.json(res, 200, {
           user: identity.user,
@@ -596,7 +599,8 @@ export class AuthService {
             this.audit(user.id, "password-change", user.id);
           })
           .immediate();
-        const next = this.issue(res, this.user(user.id)!);
+        const previous = this.db.prepare("SELECT persistent FROM sessions WHERE session_hash=?").get(identity.sessionHash) as { persistent: number };
+        const next = this.issue(res, this.user(user.id)!, !!previous.persistent);
         this.json(res, 200, { user: next.user, csrfToken: next.csrfToken });
         return true;
       }

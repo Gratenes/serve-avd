@@ -172,3 +172,28 @@ test('revocation closes device input and fresh login never replays unsent text o
     assert.deepEqual(h.errors, []);
   } finally { await h.close(); }
 });
+
+test('login design validates fields, supports keyboard reveal and session-only sign-in', async () => {
+  const h = await fixture('/emu');
+  try {
+    await h.page.goto(h.origin + '/emu/login');
+    await h.page.locator('#login-form button[type="submit"]').click();
+    await h.page.locator('#user-error:visible').waitFor();
+    assert.equal(await h.page.locator('#login-user').getAttribute('aria-invalid'), 'true');
+    await h.page.locator('#login-form').getByLabel('Username', {exact:true}).fill('admin');
+    await h.page.getByLabel('Password', {exact:true}).fill(adminPassword);
+    await h.page.getByRole('button', {name:'Show password',exact:true}).focus();
+    await h.page.keyboard.press('Enter');
+    assert.equal(await h.page.locator('#login-pass').getAttribute('type'),'text');
+    await h.page.getByLabel('Keep me signed in on this browser').uncheck();
+    await h.page.locator('#login-form button[type="submit"]').click();
+    await h.page.locator('.account-menu').waitFor();
+    const cookie = (await h.context.cookies()).find(c=>c.name.startsWith('serve_avd_'));
+    assert.equal(cookie.expires,-1);
+    await h.page.goto(h.origin + '/emu/login');
+    await h.page.getByRole('heading', {name:'Signed in as admin'}).waitFor();
+    await h.page.getByRole('button',{name:'Use a different account'}).click();
+    await h.page.locator('#login:visible').waitFor();
+    assert.deepEqual(h.errors,[]);
+  } finally {await h.close();}
+});
