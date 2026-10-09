@@ -71,7 +71,7 @@
     "typecheck": "tsc --noEmit",
     "test": "tsx --test test/*.test.ts",
     "prepublishOnly": "npm run build",
-    "test:browser": "npm run build && node --test test/browser.test.mjs"
+    "test:browser": "npm run build && node --test test/browser*.test.mjs"
   },
   "dependencies": {
     "commander": "^14.0.1",
