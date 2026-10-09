@@ -18,7 +18,7 @@ const nodeCommon = {
   logLevel: "info",
   define,
   // Keep real dependencies external — they're declared in package.json.
-  external: ["ws", "commander"],
+  external: ["ws", "commander", "better-sqlite3", "@node-rs/argon2"],
 };
 
 // CLI entry (ESM, executable).

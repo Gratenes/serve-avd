@@ -12,6 +12,7 @@ declare const __SERVE_AVD_VERSION__: string | undefined;
 
 interface BootConfig {
   basePath: string;
+  authEnabled?: boolean;
   codec: "auto" | "mjpeg";
   initialState: { panes?: string[] };
   version: string;
@@ -66,6 +67,54 @@ const BOOT: BootConfig = (window as unknown as { __SERVE_AVD__: BootConfig }).__
   codec: "auto",
   initialState: {},
   version: "dev",
+};
+
+interface AccountIdentity { id: string; username: string; role: "admin" | "operator"; mustChangePassword: boolean }
+let account: AccountIdentity | null = null;
+let csrfToken = "";
+let authExpired = false;
+const nativeFetch = window.fetch.bind(window);
+const loginUrl = () => `${BOOT.basePath}/login?returnTo=${encodeURIComponent(location.pathname + location.search + location.hash)}`;
+function expireAuthentication(): void {
+  if (authExpired) return;
+  authExpired = true;
+  window.dispatchEvent(new Event("auth-expired"));
+  const app = document.getElementById("app");
+  const link = el("a", { class: "btn", href: loginUrl(), text: "Sign in again" });
+  app?.replaceChildren(el("div", { class: "empty auth-expired", role: "alert" },
+    el("p", { text: "Your session ended. Sign in to continue." }), link));
+  link.focus();
+}
+async function checkAuthentication(): Promise<void> {
+  if (!BOOT.authEnabled || authExpired) return;
+  const response = await nativeFetch(`${BOOT.basePath}/auth/me`, { credentials: "same-origin" });
+  if (response.status === 401 || response.status === 403) { expireAuthentication(); return; }
+  if (!response.ok) throw new Error("Could not verify your session");
+  const identity = await response.json() as { user: AccountIdentity; csrfToken: string };
+  account = identity.user;
+  csrfToken = identity.csrfToken;
+  if (account.mustChangePassword) {
+    authExpired = true;
+    window.dispatchEvent(new Event("auth-expired"));
+    location.assign(`${BOOT.basePath}/account?returnTo=${encodeURIComponent(location.pathname + location.search)}`);
+  }
+}
+// Cover workspace actions, inspector requests and video fetches with one boundary.
+window.fetch = async (input, init) => {
+  const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+  const protectedRequest = BOOT.authEnabled && url.origin === location.origin &&
+    url.pathname.startsWith(`${BOOT.basePath}/`);
+  if (protectedRequest && authExpired) throw new Error("Session ended");
+  let options = init;
+  if (protectedRequest) {
+    const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
+    const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+    if (!["GET", "HEAD", "OPTIONS"].includes(method)) headers.set("X-CSRF-Token", csrfToken);
+    options = { ...init, headers, credentials: "same-origin" };
+  }
+  const response = await nativeFetch(input, options);
+  if (protectedRequest && response.status === 401) expireAuthentication();
+  return response;
 };
 
 const ORIENTATIONS = ["portrait", "landscape_left", "portrait_upside_down", "landscape_right"];
@@ -466,7 +515,7 @@ class DeviceView {
   // ── WebSocket ────────────────────────────────────────────────────────────
 
   private connectWs(): void {
-    if (this.closed) return;
+    if (this.closed || authExpired) return;
     const ws = new WebSocket(wsUrl(this.entry.wsEndpoint));
     ws.binaryType = "arraybuffer";
     this.ws = ws;
@@ -492,7 +541,11 @@ class DeviceView {
         } catch {}
       }
     };
-    ws.onclose = () => {
+    ws.onclose = (event) => {
+      if (BOOT.authEnabled) {
+        if (event.code === 4001 || event.code === 4401 || event.code === 1008) expireAuthentication();
+        else void checkAuthentication().catch(() => {});
+      }
       this.root.dispatchEvent(new Event("devicechange"));
       this.cancelInput(false);
       this.ws = null;
@@ -509,7 +562,7 @@ class DeviceView {
     const frame = new Uint8Array(1 + json.length);
     frame[0] = tag;
     frame.set(json, 1);
-    if (this.closed || this.suspended) return;
+    if (this.closed || this.suspended || authExpired) return;
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(frame);
     } else {
@@ -527,7 +580,7 @@ class DeviceView {
   }
 
   private runMjpegStream(): void {
-    if (this.closed || this.suspended) return;
+    if (this.closed || this.suspended || authExpired) return;
     if (this.mjpegRetry !== null) clearTimeout(this.mjpegRetry);
     this.mjpegRetry = null;
     this.setStatus("MJPEG", true);
@@ -543,7 +596,7 @@ class DeviceView {
       });
     }
     const connect = () => {
-      if (this.closed || this.suspended) return;
+      if (this.closed || this.suspended || authExpired) return;
       img.src = `${this.entry.streamMjpegEndpoint}?t=${Date.now()}`;
     };
     connect();
@@ -1128,8 +1181,10 @@ class Panes {
           el("div", {}, el("strong", { text: device.model ?? device.serial }), el("span", { class: "serial", text: ` ${device.serial}` })),
         );
         if (device.attached) row.append(el("span", { class: "chip", text: "streaming" }));
-        else if (device.state === "device")
-          row.append(button("Attach", `Attach ${device.serial}`, () => void this.startAndReload(device.serial)));
+        else if (device.state === "device") {
+          if (account?.role !== "operator") row.append(button("Attach", `Attach ${device.serial}`, () => void this.startAndReload(device.serial)));
+          else row.append(el("span", { class: "chip chip-dim", text: "Admin required" }));
+        }
         else row.append(el("span", { class: "chip chip-dim", text: device.state }));
         list.append(row);
       }
@@ -1140,7 +1195,7 @@ class Panes {
         row.append(
           avd.running
             ? el("span", { class: "chip", text: "running" })
-            : button("Boot", `Boot ${avd.name}`, () => void this.startAndReload(avd.name)),
+            : account?.role === "operator" ? el("span", { class: "chip chip-dim", text: "Admin required" }) : button("Boot", `Boot ${avd.name}`, () => void this.startAndReload(avd.name)),
         );
         list.append(row);
       }
@@ -1599,10 +1654,13 @@ async function main(): Promise<void> {
   const app = document.getElementById("app")!;
   let api: ApiState;
   try {
+    await checkAuthentication();
+    if (authExpired) return;
     const res = await fetch(`${BOOT.basePath}/api` || "/api");
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     api = await res.json() as ApiState;
   } catch {
+    if (authExpired) return;
     app.replaceChildren(el("p", { class: "empty", text: "Failed to reach the serve-avd server. Reload to retry." }));
     return;
   }
@@ -1611,6 +1669,7 @@ async function main(): Promise<void> {
   const mobile = matchMedia("(max-width: 700px), (pointer: coarse) and (max-height: 500px)");
   const views: DeviceView[] = [];
   const hidden = new Set<string>();
+  window.addEventListener("auth-expired", () => { for (const view of views) view.destroy(); panes?.close(); });
   let activeDeviceId: string | null = api.devices[0]?.device ?? null;
   let layout: Layout = "split";
   let mirror = false;
@@ -1664,6 +1723,19 @@ async function main(): Promise<void> {
     el("div", { class: "brand" }, el("span", { class: "logo", text: "▶" }), el("strong", { text: "serve-avd" }), el("span", { class: "version", text: `v${api.version}` })),
     layoutBar, selector,
     el("div", { class: "topbar-actions" }, mirrorButton, el("span", { class: "toolbar-divider" }), railToggle, remoteToggle, inspectorToggle));
+  if (account) {
+    const menu = el("details", { class: "account-menu" });
+    const summary = el("summary", { text: `${account.username} · ${account.role}`, "aria-label": "Account menu" });
+    const settings = el("a", { href: `${BOOT.basePath}/account`, text: "Account and password" });
+    const logout = button("Sign out", "Sign out", () => {
+      logout.disabled = true;
+      void fetch(`${BOOT.basePath}/auth/logout`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })
+        .then(response => { if (!response.ok) throw new Error("Sign out failed"); expireAuthentication(); location.assign(`${BOOT.basePath}/login`); })
+        .catch(() => { logout.disabled = false; });
+    });
+    menu.append(summary, el("div", { class: "account-menu-items" }, settings, logout));
+    header.querySelector(".topbar-actions")!.append(menu);
+  }
   const railNodes = new Map<string, { row: HTMLElement; select: HTMLButtonElement; eye: HTMLButtonElement; meta: HTMLElement }>();
   const empty = el("div", { class: "empty workspace-empty" });
   stage.append(empty);
@@ -1795,6 +1867,10 @@ async function main(): Promise<void> {
     void refreshAvailable();
   };
   async function refreshAvailable(): Promise<void> {
+    if (account?.role === "operator") {
+      available.replaceChildren(el("p", { class: "rail-empty", text: "Device start operations are managed by administrators." }));
+      return;
+    }
     available.replaceChildren(el("p", { class: "muted", text: "Loading devices…" }));
     try {
       const res = await fetch(api.gridApiEndpoint);
@@ -1841,6 +1917,7 @@ async function main(): Promise<void> {
   update();
   void refreshAvailable();
   window.setInterval(updateRemote, 1000);
+  if (BOOT.authEnabled) window.setInterval(() => void checkAuthentication().catch(() => {}), 15_000);
 }
 
 void main();
