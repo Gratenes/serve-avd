@@ -634,3 +634,37 @@ test("concurrent admin disable requests preserve an enabled administrator", asyn
     await app.cleanup();
   }
 });
+
+
+test("remember-me controls cookie persistence and survives password rotation/restart", async () => {
+  const app = await setup();
+  try {
+    const login = await app.request("/auth/login", "POST", {username:"Admin",password:secret,remember:false});
+    assert.equal(login.response.status,200);
+    assert.doesNotMatch(login.response.headers.get("set-cookie")!,/Max-Age|Expires/i);
+    app.restart();
+    const changed = await app.request("/auth/password", "POST", {currentPassword:secret,newPassword:"another long password"});
+    assert.equal(changed.response.status,200);
+    assert.doesNotMatch(changed.response.headers.get("set-cookie")!,/Max-Age|Expires/i);
+    const logout = await app.request("/auth/logout", "POST", {});
+    assert.match(logout.response.headers.get("set-cookie")!,/Max-Age=0/);
+    const remembered = await app.request("/auth/login", "POST", {username:"Admin",password:"another long password",remember:true});
+    assert.match(remembered.response.headers.get("set-cookie")!,/Max-Age=43200/);
+  } finally { await app.cleanup(); }
+});
+
+test("version-one databases migrate without losing accounts or sessions", async () => {
+  const app = await setup();
+  try {
+    await app.request("/auth/login", "POST", {username:"Admin",password:secret});
+    const {default: Database} = await import('better-sqlite3');
+    const db = new Database(app.options.databasePath);
+    db.exec('ALTER TABLE sessions DROP COLUMN persistent; PRAGMA user_version=1;');
+    db.close();
+    app.restart();
+    assert.equal((await app.request('/auth/me')).body.user.username,'Admin');
+    const change=await app.request('/auth/password','POST',{currentPassword:secret,newPassword:'new long migration password'});
+    assert.equal(change.response.status,200);
+    assert.match(change.response.headers.get('set-cookie')!,/Max-Age=43200/);
+  } finally {await app.cleanup();}
+});
