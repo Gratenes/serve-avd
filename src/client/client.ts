@@ -288,6 +288,7 @@ class DeviceView {
   private framesDecoded = 0;
   private framesPresented = 0;
   private pendingFrame: VideoFrame | null = null;
+  private retainedFrame: { source: VideoFrame | ImageBitmap; width: number; height: number } | null = null;
   private paintRaf: number | null = null;
   private presentationDrops = 0;
   /** Wall-clock submit time per frame timestamp, for the decode-latency readout. */
@@ -342,6 +343,8 @@ class DeviceView {
       this.buildControls(),
     );
 
+    this.root.querySelector(".device-frame")!.append(this.root.querySelector(".device-control-sidebar")!);
+
     const actions = el("div", { class: "device-head-actions" },
       iconButton("camera", "Screenshot", () => window.open(this.entry.screenshotEndpoint, "_blank")),
       iconButton("rotateCcw", "Rotate", () => this.rotateStep(1)),
@@ -357,6 +360,9 @@ class DeviceView {
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       this.renderWidth = Math.max(1, Math.round(entry.contentRect.width * dpr));
       this.renderHeight = Math.max(1, Math.round(entry.contentRect.height * dpr));
+      // Static screens may never emit another frame after a layout change.
+      // Repaint the full-resolution source instead of stretching the old raster.
+      if (!this.closed && !this.suspended && this.retainedFrame) this.paintRetainedFrame();
     });
     this.resizeObserver.observe(this.surfaceWrap);
 
@@ -436,8 +442,8 @@ class DeviceView {
         button("Send", "Send text to device", sendText),
         button("Enter", "Press Enter on device", () => this.sendKey("Enter")),
         button("Backspace", "Press Backspace on device", () => this.sendKey("Backspace"))));
-    const utilities = el("details", { class: "device-utilities" }, el("summary", { text: "Device controls" }), nav, tools);
-    return el("div", { class: "device-controls" }, textPanel, utilities);
+    return el("div", { class: "device-controls" }, textPanel,
+      el("div", { class: "device-control-sidebar", role: "group", "aria-label": `Device controls for ${this.entry.name}` }, nav, tools));
   }
 
   /**
@@ -783,15 +789,26 @@ class DeviceView {
   private paintFrame(frame: VideoFrame): void {
     const width = frame.displayWidth || frame.codedWidth;
     const height = frame.displayHeight || frame.codedHeight;
-    const raster = this.rasterSize(width, height);
     this.noteFrameSize(width, height);
+    this.retainFrame(frame, width, height);
+    this.framesPresented++;
+  }
+
+  private retainFrame(source: VideoFrame | ImageBitmap, width: number, height: number): void {
+    this.retainedFrame?.source.close();
+    this.retainedFrame = { source, width, height };
+    this.paintRetainedFrame();
+  }
+
+  private paintRetainedFrame(): void {
+    const frame = this.retainedFrame;
+    if (!frame) return;
+    const raster = this.rasterSize(frame.width, frame.height);
     if (this.canvas.width !== raster.width || this.canvas.height !== raster.height) {
       this.canvas.width = raster.width;
       this.canvas.height = raster.height;
     }
-    this.ctx.drawImage(frame, 0, 0, raster.width, raster.height);
-    frame.close();
-    this.framesPresented++;
+    this.ctx.drawImage(frame.source, 0, 0, raster.width, raster.height);
   }
 
   private rasterSize(sourceWidth: number, sourceHeight: number): { width: number; height: number } {
@@ -814,14 +831,8 @@ class DeviceView {
         bitmap.close();
         return;
       }
-      const raster = this.rasterSize(bitmap.width, bitmap.height);
       this.noteFrameSize(bitmap.width, bitmap.height);
-      if (this.canvas.width !== raster.width || this.canvas.height !== raster.height) {
-        this.canvas.width = raster.width;
-        this.canvas.height = raster.height;
-      }
-      this.ctx.drawImage(bitmap, 0, 0, raster.width, raster.height);
-      bitmap.close();
+      this.retainFrame(bitmap, bitmap.width, bitmap.height);
     } catch {}
   }
 
@@ -1067,6 +1078,8 @@ class DeviceView {
     if (this.mjpegRetry !== null) clearTimeout(this.mjpegRetry);
     this.resizeObserver.disconnect();
     this.teardownDecoder();
+    this.retainedFrame?.source.close();
+    this.retainedFrame = null;
     this.ws?.close();
     if (this.img) this.img.src = "";
   }
@@ -1109,7 +1122,6 @@ class Panes {
       this.tabs.set(name, tab);
       tabBar.append(tab);
     }
-    tabBar.append(button("Close", "Close inspector", () => this.close(), "inspector-close"));
     this.root = el("aside", { class: "panes inspector hidden", "aria-label": "Inspector" }, this.identity, tabBar, this.body);
   }
 
@@ -1790,12 +1802,13 @@ async function main(): Promise<void> {
       nodes.select.setAttribute("aria-pressed", String(active));
       nodes.eye.setAttribute("aria-label", `${hidden.has(id) ? "Show" : "Hide"} ${view.entry.name}`);
       nodes.eye.title = nodes.eye.getAttribute("aria-label")!;
+      nodes.eye.setAttribute("aria-pressed", String(!hidden.has(id)));
       nodes.eye.innerHTML = hidden.has(id) ? workspaceIcons.eyeOff : workspaceIcons.eye;
     }
     remote.setVisible(showRemote);
     updateRemote();
   }
-  function selectDevice(id: string): void {
+  function selectDevice(id: string, focusInput = true): void {
     if (!views.some(v => v.entry.device === id)) return;
     const changed = activeDeviceId !== id;
     if (changed) views.find(v => v.entry.device === activeDeviceId)?.cancelInteraction();
@@ -1803,6 +1816,7 @@ async function main(): Promise<void> {
     activeDeviceId = id;
     update();
     if (changed) panes?.refreshTarget();
+    if (focusInput) views.find(v => v.entry.device === id)?.root.querySelector<HTMLElement>(".screen-wrap")?.focus({ preventScroll: true });
   }
   const toggleDevice = (id: string) => {
     if (hidden.has(id)) { hidden.delete(id); activeDeviceId ??= id; }
@@ -1834,6 +1848,7 @@ async function main(): Promise<void> {
     select.addEventListener("click", () => { selectDevice(entry.device); if (mobile.matches) { showRail = false; update(); } });
     const eye = workspaceButton("eye", `Hide ${entry.name}`, () => toggleDevice(entry.device));
     eye.classList.add("rail-eye");
+    eye.setAttribute("aria-pressed", "true");
     const grip = workspaceButton("grip", `Reorder ${entry.name}; use up and down arrows`, () => {});
     grip.classList.add("rail-grip");
     grip.draggable = true;
@@ -1850,9 +1865,13 @@ async function main(): Promise<void> {
     row.addEventListener("drop", e => { e.preventDefault(); if (dragged) reorder(dragged, views.indexOf(view)); dragged = null; });
     railNodes.set(entry.device, { row, select, eye, meta });
     railList.append(row);
-    activeDeviceId ??= entry.device;
-    view.root.addEventListener("pointerdown", () => selectDevice(entry.device), true);
-    view.root.addEventListener("focusin", () => selectDevice(entry.device));
+    if (!hidden.has(entry.device)) activeDeviceId ??= entry.device;
+    view.root.addEventListener("pointerdown", () => selectDevice(entry.device, false), true);
+    view.root.addEventListener("click", event => {
+      const target = event.target as Element;
+      if (!target.closest("button, input, textarea, select, summary, a, [contenteditable], [role=button]")) selectDevice(entry.device);
+    });
+    view.root.addEventListener("focusin", () => selectDevice(entry.device, false));
     view.root.addEventListener("devicechange", updateRemote);
     view.root.addEventListener("devicefocus", () => { layout = layout === "focus" && activeDeviceId === entry.device ? "split" : "focus"; selectDevice(entry.device); });
     view.root.addEventListener("devicehide", () => toggleDevice(entry.device));
@@ -1866,22 +1885,41 @@ async function main(): Promise<void> {
     selectDevice(device.device);
     void refreshAvailable();
   };
+  let refreshingDevices = false;
   async function refreshAvailable(): Promise<void> {
-    if (account?.role === "operator") {
-      available.replaceChildren(el("p", { class: "rail-empty", text: "Device start operations are managed by administrators." }));
-      return;
-    }
-    available.replaceChildren(el("p", { class: "muted", text: "Loading devices…" }));
+    if (refreshingDevices || authExpired) return;
+    refreshingDevices = true;
     try {
       const res = await fetch(api.gridApiEndpoint);
       if (!res.ok) throw new Error("Device discovery unavailable");
-      const data = await res.json() as { devices: Array<{serial: string; state: string; model?: string}>; avds: Array<{name: string; running: boolean}> };
+      const data = await res.json() as { devices: Array<Partial<DeviceEntry> & {serial: string; state: string; model?: string; attached?: boolean}>; avds: Array<{name: string; running: boolean}> };
+      if (authExpired) return;
+      const previousTarget = activeDeviceId;
+      // Discovery updates the device inventory, never the browser's hidden set.
+      for (let i = views.length - 1; i >= 0; i--) {
+        const view = views[i]!;
+        if (data.devices.some(d => d.serial === view.entry.device && d.state === "device")) continue;
+        view.destroy();
+        view.root.remove();
+        railNodes.get(view.entry.device)?.row.remove();
+        railNodes.delete(view.entry.device);
+        [...selector.options].find(o => o.value === view.entry.device)?.remove();
+        views.splice(i, 1);
+        if (activeDeviceId === view.entry.device) activeDeviceId = null;
+      }
+      for (const device of data.devices) {
+        if (device.state === "device" && device.attached && device.device && device.wsEndpoint &&
+            !views.some(v => v.entry.device === device.device)) addView(device as DeviceEntry);
+      }
+      activeDeviceId ??= views.find(v => !hidden.has(v.entry.device))?.entry.device ?? null;
+      update();
+      if (previousTarget !== activeDeviceId) panes?.refreshTarget();
       available.replaceChildren();
       const candidates = [
         ...data.devices.filter(d => d.state === "device" && !views.some(v => v.entry.device === d.serial)).map(d => ({id: d.serial, name: d.model ?? d.serial, label: "Attach"})),
         ...data.avds.filter(d => !d.running).map(d => ({id: d.name, name: d.name, label: "Boot"})),
       ];
-      for (const item of candidates) {
+      for (const item of account?.role === "operator" ? [] : candidates) {
         const start = button(item.label, `${item.label} ${item.name}`, () => {
           start.disabled = true;
           start.textContent = "Starting…";
@@ -1890,9 +1928,11 @@ async function main(): Promise<void> {
         const message = el("span", { class: "muted rail-attach-name", text: item.name });
         available.append(el("div", { class: "rail-attach" }, message, start));
       }
-      if (!candidates.length) available.append(el("p", { class: "rail-empty", text: "No additional devices available. Start an emulator and refresh the list to attach it." }));
+      if (!candidates.length) available.append(el("p", { class: "rail-empty", text: "Connected devices appear automatically. Use the eye to show or hide a preview." }));
     } catch {
-      available.replaceChildren(el("p", { class: "rail-empty", text: "Could not load available devices." }));
+      if (!authExpired) available.replaceChildren(el("p", { class: "rail-empty", text: "Could not load available devices." }));
+    } finally {
+      refreshingDevices = false;
     }
     available.append(button("Refresh devices", "Refresh devices", () => void refreshAvailable(), "ghost refresh-devices"));
   }
@@ -1917,6 +1957,7 @@ async function main(): Promise<void> {
   update();
   void refreshAvailable();
   window.setInterval(updateRemote, 1000);
+  window.setInterval(() => { if (!document.hidden) void refreshAvailable(); }, 5000);
   if (BOOT.authEnabled) window.setInterval(() => void checkAuthentication().catch(() => {}), 15_000);
 }
 

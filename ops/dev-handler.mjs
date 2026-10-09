@@ -1,9 +1,9 @@
 // Deployment-specific routes share the middleware's authentication boundary.
-export function createDevHandler(middleware, serials, attached) {
+export function createDevHandler(middleware, serials, attached, { discoverAll = false } = {}) {
   if (!middleware.auth) throw new Error("Native authentication is required");
   const pathFor = (req) => (req.url ?? "/").split("?")[0];
   const helperOf = (path) =>
-    serials.find((s) => path.startsWith(`/helper/${s}/`));
+    serials.find((s) => path.startsWith(`/helper/${encodeURIComponent(s)}/`));
   const allowed = (path) =>
     path === "/" ||
     path === "/api" ||
@@ -17,6 +17,10 @@ export function createDevHandler(middleware, serials, attached) {
     res.setHeader("Referrer-Policy", "no-referrer");
     if (await middleware.auth.handle(req, res)) return;
     const path = pathFor(req);
+    if (path === "/grid/api" && discoverAll) {
+      middleware(req, res);
+      return;
+    }
     if (path === "/grid/api") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(

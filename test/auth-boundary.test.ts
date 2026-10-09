@@ -13,7 +13,7 @@ import WebSocket from "ws";
 import { createDevHandler } from "../ops/dev-handler.mjs";
 import { emuMiddleware } from "../src/middleware";
 
-async function fixture(basePath = "", allowedDevices: string[] = [], wrapper = false) {
+async function fixture(basePath = "", allowedDevices: string[] = [], wrapper = false, discoverAll = false) {
   const dir = mkdtempSync(join(tmpdir(), "avd-boundary-"));
   const origin = "http://127.0.0.1";
   const middleware = emuMiddleware({
@@ -27,6 +27,7 @@ async function fixture(basePath = "", allowedDevices: string[] = [], wrapper = f
           middleware,
           ["emulator-5580", "emulator-5590"],
           new Set(["emulator-5580"]),
+          { discoverAll },
         )
       : middleware,
   );
@@ -332,4 +333,19 @@ test("hosted grid override requires native authentication and retains startup re
   } finally {
     await h.close();
   }
+});
+
+
+test("automatic discovery retains authentication and blocks emulator startup", async () => {
+  const h = await fixture("", [], true, true);
+  try {
+    assert.equal((await h.request("/grid/api")).status, 401);
+    const session = await h.login();
+    const headers = { Cookie: session.cookie, Origin: h.origin, "X-CSRF-Token": session.csrfToken, "Content-Type": "application/json" };
+    const response = await h.request("/grid/api", { headers });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { devices: [], avds: [] });
+    assert.equal((await h.request("/grid/api/start", { method: "POST", headers, body: JSON.stringify({device:"unconfigured"}) })).status, 403);
+    assert.equal((await h.request("/helper/unconfigured/config", { headers })).status, 403);
+  } finally { await h.close(); }
 });

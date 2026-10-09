@@ -252,7 +252,7 @@ The library retains local unauthenticated compatibility: `emuMiddleware({ auth: 
 ```sh
 # Keep account data outside the checkout, in a directory owned by the service user.
 export SERVE_AVD_AUTH_DATABASE=/var/lib/serve-avd/auth.sqlite
-export SERVE_AVD_AUTH_ORIGIN=https://serve-avd-dev.embedez.com
+export SERVE_AVD_AUTH_ORIGIN=https://example.com
 
 # Run locally as the service user, in an interactive terminal.
 node dist/serve-avd.js auth-bootstrap
@@ -272,7 +272,7 @@ For local account recovery, stop the service first, then run the command as its 
 ```sh
 node dist/serve-avd.js auth-recover \
   --auth-database /var/lib/serve-avd/auth.sqlite \
-  --auth-origin https://serve-avd-dev.embedez.com
+  --auth-origin https://example.com
 ```
 
 Enter the existing administrator username and a new hidden password. Recovery enables that administrator, clears the forced-change flag and revokes their stored sessions; restart the service afterward so any old process closes its connections. No password option or password environment variable exists. Do not put credentials in shell history, source control or service configuration.
@@ -290,7 +290,7 @@ server.on("upgrade", (req, socket, head) => middleware.handleUpgrade(req, socket
 // On shutdown: middleware.auth?.close(); closeAllDeviceSessions();
 ```
 
-A wrapper overriding `/grid/api` or any other route before calling the middleware must first call `await middleware.auth.handle(req, res)` and return when it returns true. Otherwise it exposes an authentication bypass. Require an auth service at startup, preserve the existing two-TV allowlist and disabled startup policy, bind the hosted process to loopback, and keep Cloudflare Access plus tunnel Access-token validation enabled. Production service configuration is separate from the dev rollout.
+A wrapper overriding `/grid/api` or any other route before calling the middleware must first call `await middleware.auth.handle(req, res)` and return when it returns true. Otherwise it exposes an authentication bypass. Require an auth service at startup, preserve the deployment's configured device scope and disabled startup policy, bind the hosted process to loopback, and keep Cloudflare Access plus tunnel Access-token validation enabled. Production service configuration is separate from the dev rollout.
 
 The database directory is created with mode 0700 and database file with mode 0600. Ensure any existing parent directory also has restrictive ownership/permissions. Migrations run transactionally at startup; newer unsupported schema versions fail closed. Back up while the service is stopped, copying the database and any `-wal`/`-shm` companions together, or use SQLite's online backup API. Treat backups as account data: restrict access, encrypt off-host copies and retain audit history. Restore to the configured absolute path under the service user's ownership, start the service and verify login. A restored snapshot can restore previously revoked sessions; keep the service offline until all restored sessions have been revoked through the account tools if that snapshot is not current.
 

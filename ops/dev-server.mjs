@@ -1,16 +1,17 @@
 import { createServer } from "node:http";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { createDevHandler } from "./dev-handler.mjs";
 import {
   emuMiddleware,
   closeAllDeviceSessions,
-} from "/home/vm/code/serve-avd/dist/middleware.js";
+  closeDeviceSession,
+} from "../dist/middleware.js";
 
-// emulator-5580 is the shared viptv-design-tv AVD and must attach at startup.
-// emulator-5590 is the optional viptv-hero-qa AVD (tmux session viptv-hero-emulator);
-// it attaches whenever it is running, without blocking or failing the service.
-const serial = "emulator-5580";
-const optional = ["emulator-5590"];
-const serials = [serial, ...optional];
+// Discover every connected ADB device; visibility belongs to each browser.
+const serials = [];
+const attached = new Set();
+const exec = promisify(execFile);
 const databasePath = process.env.SERVE_AVD_AUTH_DATABASE;
 const origin = process.env.SERVE_AVD_AUTH_ORIGIN;
 if (!databasePath || !origin)
@@ -19,37 +20,47 @@ const middleware = emuMiddleware({
   codec: "auto",
   sessionOptions: { bitRateMbps: 2 },
   auth: { databasePath, origin },
-  allowedDevices: serials,
 });
 if (!middleware.auth) throw new Error("Native authentication is required");
-await middleware.attachDevice(serial);
-const attached = new Set([serial]);
-let attaching = false;
-const attachOptional = async () => {
-  if (attaching) return;
-  attaching = true;
+let discovering = false;
+const discoverDevices = async () => {
+  if (discovering) return;
+  discovering = true;
   try {
-    for (const s of optional) {
+    const { stdout } = await exec("adb", ["devices"], { timeout: 10000 });
+    const online = stdout.split("\n").filter(line => /\sdevice\s*$/.test(line))
+      .map(line => line.trim().split(/\s+/)[0]);
+    serials.splice(0, serials.length, ...online);
+    for (const s of attached) {
+      if (!online.includes(s)) {
+        closeDeviceSession(s);
+        attached.delete(s);
+      }
+    }
+    for (const s of online) {
       if (attached.has(s)) continue;
       try {
         await middleware.attachDevice(s);
         attached.add(s);
         console.log(`serve-avd: attached ${s}`);
       } catch {
-        /* not running yet */
+        // Retry devices that are still booting on the next discovery pass.
       }
     }
+  } catch {
+    console.error("serve-avd: device discovery unavailable; retrying");
   } finally {
-    attaching = false;
+    discovering = false;
   }
 };
-attachOptional();
-setInterval(attachOptional, 15000).unref();
+await discoverDevices();
+const discoveryTimer = setInterval(discoverDevices, 5000);
+discoveryTimer.unref();
 const pathFor = (req) => (req.url ?? "/").split("?")[0];
-const server = createServer(createDevHandler(middleware, serials, attached));
+const server = createServer(createDevHandler(middleware, serials, attached, { discoverAll: true }));
 server.on("upgrade", (req, socket, head) => {
   const path = pathFor(req);
-  if (!serials.some((s) => path === `/helper/${s}/ws`)) {
+  if (!serials.some((s) => path === `/helper/${encodeURIComponent(s)}/ws`)) {
     socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
     return;
   }
@@ -59,6 +70,7 @@ server.listen(3201, "127.0.0.1", () =>
   console.log("serve-avd: http://127.0.0.1:3201"),
 );
 const stop = () => {
+  clearInterval(discoveryTimer);
   middleware.auth.close();
   closeAllDeviceSessions();
   server.close(() => process.exit(0));
