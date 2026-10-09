@@ -188,6 +188,7 @@ export class DeviceMedia {
       attachLogs?: boolean;
       burnKeys?: boolean;
     } = {},
+    authorized: () => boolean = () => true,
   ): Promise<RecordingState> {
     if (this.active || this.starting)
       throw new Error("Recording is already running");
@@ -207,6 +208,7 @@ export class DeviceMedia {
     } finally {
       this.starting = false;
     }
+    if (!authorized()) throw new Error("Session expired");
     const id = randomUUID();
     const output = join(this.dir, `${id}.mp4`);
     const proc = spawn(
@@ -420,6 +422,7 @@ export class DeviceMedia {
       trimEnd?: unknown;
       burnKeys?: boolean;
     },
+    authorized: () => boolean = () => true,
   ): Promise<CaptureArtifact> {
     const source = this.captures.find((c) => c.id === id);
     if (!source || source.format === "png")
@@ -448,6 +451,7 @@ export class DeviceMedia {
       ),
     ) as { events: EventLogEntry[]; logs: { at: number; line: string }[] };
     const events = sidecar.events;
+    if (!authorized()) throw new Error("Session expired");
     if (options.burnKeys) {
       subtitle = join(this.dir, `${newId}.ass`);
       writeFileSync(

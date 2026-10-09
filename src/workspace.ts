@@ -21,6 +21,7 @@ import { DeviceMedia } from "./workspace-media";
 import { parsePackageMetadata } from "./observability";
 import { adbPath, adbEmu } from "./adb";
 import { ActionError } from "./actions";
+import { shellQuote } from "./keymap";
 import { recordEventLogEvent } from "./event-log";
 import type { EmulatorSession } from "./device-session";
 import type {
@@ -78,6 +79,25 @@ async function apkPackage(path: string): Promise<string | null> {
     }
   }
   return null;
+}
+export function parseNetworkStatus(text: string): {
+  speed?: string;
+  delay?: string;
+} {
+  const up = /upload speed:\s*([\d.]+)\s*bits\/s/i.exec(text),
+    down = /download speed:\s*([\d.]+)\s*bits\/s/i.exec(text);
+  const min = /minimum latency:\s*(\d+)\s*ms/i.exec(text),
+    max = /maximum latency:\s*(\d+)\s*ms/i.exec(text);
+  const result: { speed?: string; delay?: string } = {};
+  if (up && down) {
+    const uplink = Math.round(Number(up[1]) / 1000),
+      downlink = Math.round(Number(down[1]) / 1000);
+    result.speed =
+      uplink === 0 && downlink === 0 ? "full" : `${uplink}:${downlink}`;
+  }
+  if (min && max)
+    result.delay = min[1] === max[1] ? min[1] : `${min[1]}:${max[1]}`;
+  return result;
 }
 export class WorkspaceService {
   private devices = new Map<
@@ -245,12 +265,19 @@ export class WorkspaceService {
       .filter((name) => /^[\w.]+$/.test(name))
       .slice(0, 200);
     const apps = await Promise.all(
-      names.map(async (name) =>
-        parsePackageMetadata(
-          name,
-          await session.shell.run(`dumpsys package ${name}`),
-        ),
-      ),
+      names.map(async (name) => {
+        const dump = await session.shell.run(`dumpsys package ${name}`);
+        const app = parsePackageMetadata(name, dump);
+        const codePath = /\bcodePath=([^\s]+)/.exec(dump)?.[1];
+        if (codePath) {
+          const result = await session.shell
+            .run(`stat -c %s ${shellQuote(codePath + "/base.apk")} 2>/dev/null`)
+            .catch(() => "");
+          const bytes = Number(result.trim());
+          if (Number.isFinite(bytes) && bytes > 0) app.bytes = bytes;
+        }
+        return app;
+      }),
     );
     this.appCache.set(session.serial, { at: Date.now(), apps });
     return apps;
@@ -387,19 +414,29 @@ export class WorkspaceService {
   async currentPreset(
     session: EmulatorSession,
   ): Promise<Record<string, unknown>> {
-    const [font, locale, network, wifi, airplane, battery, talkback, contrast] =
-      await Promise.all([
-        session.shell.run("settings get system font_scale"),
-        session.shell.run("getprop persist.sys.locale"),
-        session.serial.startsWith("emulator-")
-          ? adbEmu(session.serial, ["network", "status"]).catch(() => "")
-          : Promise.resolve(""),
-        session.shell.run("settings get global wifi_on"),
-        session.shell.run("settings get global airplane_mode_on"),
-        session.runAction("battery", {}).catch(() => null),
-        session.runAction("talkback", {}).catch(() => null),
-        session.runAction("high-contrast", {}).catch(() => null),
-      ]);
+    const [
+      font,
+      locale,
+      network,
+      wifi,
+      airplane,
+      battery,
+      talkback,
+      contrast,
+      data,
+    ] = await Promise.all([
+      session.shell.run("settings get system font_scale"),
+      session.shell.run("getprop persist.sys.locale"),
+      session.serial.startsWith("emulator-")
+        ? adbEmu(session.serial, ["network", "status"]).catch(() => "")
+        : Promise.resolve(""),
+      session.shell.run("settings get global wifi_on"),
+      session.shell.run("settings get global airplane_mode_on"),
+      session.runAction("battery", {}).catch(() => null),
+      session.runAction("talkback", {}).catch(() => null),
+      session.runAction("high-contrast", {}).catch(() => null),
+      session.shell.run("settings get global mobile_data"),
+    ]);
     const speedRaw =
       /(?:download|speed)[^\n]*:\s*([^\n]+)/i.exec(network)?.[1]?.trim() ?? "";
     const delayRaw =
@@ -418,6 +455,7 @@ export class WorkspaceService {
     const knownDelay = ["none", "gprs", "edge", "umts"].find((value) =>
       new RegExp(`\\b${value}\\b`, "i").test(delayRaw),
     );
+    const numeric = parseNetworkStatus(network);
     const location = await session.shell
       .run("dumpsys location")
       .catch(() => "");
@@ -425,20 +463,37 @@ export class WorkspaceService {
       location,
     );
     return {
-      fontScale: Number(font) || 1,
+      ...(Number.isFinite(Number(font)) &&
+      Number(font) >= 0.5 &&
+      Number(font) <= 3
+        ? { fontScale: Number(font) }
+        : {}),
       ...(locale ? { locale } : {}),
       network: {
         ...(knownSpeed ? { speed: knownSpeed } : {}),
         ...(knownDelay ? { delay: knownDelay } : {}),
-        wifi: wifi.trim() === "1",
-        airplane: airplane.trim() === "1",
+        ...numeric,
+        ...(["0", "1"].includes(data.trim())
+          ? { data: data.trim() === "1" }
+          : {}),
+        ...(["0", "1"].includes(wifi.trim())
+          ? { wifi: wifi.trim() === "1" }
+          : {}),
+        ...(["0", "1"].includes(airplane.trim())
+          ? { airplane: airplane.trim() === "1" }
+          : {}),
       },
+      ...(battery && typeof battery === "object" ? { battery } : {}),
       talkback: (talkback as { enabled?: boolean } | null)?.enabled,
       highContrast: (contrast as { enabled?: boolean } | null)?.enabled,
-      geo: match ? { lat: Number(match[1]), lon: Number(match[2]) } : null,
+      geo: match
+        ? { lat: Number(match[1]), lon: Number(match[2]) }
+        : session.lastKnownLocation,
       unavailable: [
-        ...(!knownSpeed ? ["Network speed unavailable"] : []),
-        ...(!match ? ["Current location unavailable"] : []),
+        ...(!knownSpeed && !numeric.speed ? ["Network speed unavailable"] : []),
+        ...(!match && !session.lastKnownLocation
+          ? ["Current location unavailable"]
+          : []),
       ],
     };
   }

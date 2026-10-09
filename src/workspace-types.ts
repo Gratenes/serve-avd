@@ -39,6 +39,9 @@ export interface InstalledApp {
   versionName: string;
   versionCode: string;
   debuggable: boolean;
+  installedAt?: string;
+  updatedAt?: string;
+  bytes?: number;
 }
 export interface RecentBuild {
   id: string;

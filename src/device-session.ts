@@ -607,7 +607,7 @@ export class EmulatorSession {
         case 0x0b: {
           const m = json<{ dx: number; dy: number; x?: number; y?: number }>();
           if (m) {
-            this.record({ kind: "scroll", action: "scroll", summary: "Scroll", details: { dx: m.dx, dy: m.dy } });
+            this.record({ kind: "scroll", action: "scroll", summary: "Scroll", details: { dx: m.dx, dy: m.dy, ...(typeof m.x === "number"?{x:m.x}:{}), ...(typeof m.y === "number"?{y:m.y}:{}) } });
             await this.injector.scroll(m.dx, m.dy, W, H, m.x, m.y);
             this.expectFrames();
           }
@@ -694,6 +694,7 @@ export class EmulatorSession {
             device: this.serial,
             source: "hid",
             kind: "drag",
+            timestamp:new Date(gesture.startedAt).toISOString(),
             action: "drag",
             summary: touchGestureSummary(gesture),
             details,
@@ -720,7 +721,7 @@ export class EmulatorSession {
         details: this.touchGestureDetails(gesture, "drag"),
       };
       if (gesture.eventId == null) {
-        recordEventLogEvent({ device: this.serial, source: "hid", kind: "drag", action: "drag", ...patch });
+        recordEventLogEvent({ device: this.serial, source: "hid", kind: "drag", timestamp:new Date(gesture.startedAt).toISOString(), action: "drag", ...patch });
       } else {
         updateEventLogEvent(gesture.eventId, patch);
       }
@@ -729,6 +730,7 @@ export class EmulatorSession {
         device: this.serial,
         source: "hid",
         kind: "tap",
+        timestamp:new Date(gesture.startedAt).toISOString(),
         action: "tap",
         summary: `Tap ${formatEventLogPoint(payload.x, payload.y)}`,
         details: this.touchGestureDetails(gesture, "tap"),
@@ -776,8 +778,11 @@ export class EmulatorSession {
   }
 
   /** Run a named device action (see `actions.ts`) against this session. */
-  runAction(name: string, params: ActionParams = {}): Promise<unknown> {
-    return runAction(this.actionContext(), name, params);
+  lastKnownLocation:{lat:number;lon:number}|null=null;
+  async runAction(name: string, params: ActionParams = {}): Promise<unknown> {
+    const result=await runAction(this.actionContext(), name, params);
+    if(name === "geo" && typeof params.lat === "number" && typeof params.lon === "number")this.lastKnownLocation={lat:params.lat,lon:params.lon};
+    return result;
   }
 
   // ── Config push ──────────────────────────────────────────────────────────

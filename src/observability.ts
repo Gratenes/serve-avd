@@ -101,6 +101,12 @@ export function parsePackageMetadata(
     versionName: /\bversionName=([^\s]+)/.exec(dump)?.[1] ?? "unknown",
     versionCode: /\bversionCode=(\d+)/.exec(dump)?.[1] ?? "unknown",
     debuggable: /\bDEBUGGABLE\b/.test(dump),
+    ...(/firstInstallTime=([^\n\r]+)/.exec(dump)?.[1]
+      ? { installedAt: /firstInstallTime=([^\n\r]+)/.exec(dump)![1]!.trim() }
+      : {}),
+    ...(/lastUpdateTime=([^\n\r]+)/.exec(dump)?.[1]
+      ? { updatedAt: /lastUpdateTime=([^\n\r]+)/.exec(dump)![1]!.trim() }
+      : {}),
   };
 }
 export function parseCpuPercent(

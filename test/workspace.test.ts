@@ -198,3 +198,50 @@ test("actual ffmpeg artifacts support MP4, WebM, GIF, trim, key burn and matchin
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("numeric emulator network profiles round trip into real action params", async () => {
+  const { parseNetworkStatus } = await import("../src/workspace");
+  assert.deepEqual(
+    parseNetworkStatus(
+      "download speed: 0 bits/s\nupload speed: 0 bits/s\nminimum latency: 0 ms\nmaximum latency: 0 ms",
+    ),
+    { speed: "full", delay: "0" },
+  );
+  assert.deepEqual(
+    parseNetworkStatus(
+      "download speed: 144000 bits/s\nupload speed: 80000 bits/s\nminimum latency: 100 ms\nmaximum latency: 200 ms",
+    ),
+    { speed: "80:144", delay: "100:200" },
+  );
+  assert.deepEqual(parseNetworkStatus("Permission denied"), {});
+});
+test("preset TalkBack changes preserve unrelated accessibility services", async () => {
+  const { runAction } = await import("../src/actions");
+  let services = "com.other/.Reader:com.google.talkback/.TalkBackService\n";
+  const commands: string[] = [];
+  const context: any = {
+    serial: "fixture",
+    record: () => {},
+    shell: {
+      run: async (command: string) => {
+        if (
+          command.startsWith(
+            "settings get secure enabled_accessibility_services",
+          )
+        )
+          return services;
+        commands.push(command);
+        return "";
+      },
+    },
+  };
+  await runAction(context, "talkback", { enabled: false });
+  assert.match(commands[0]!, /com.other\/\.Reader/);
+  assert.match(commands[0]!, /accessibility_enabled 1/);
+  assert.ok(!commands[0]!.includes("talkback"));
+  services = "null\n";
+  commands.length = 0;
+  await runAction(context, "talkback", { enabled: false });
+  assert.match(commands[0]!, /accessibility_enabled 0/);
+  assert.ok(!commands[0]!.includes("null"));
+});

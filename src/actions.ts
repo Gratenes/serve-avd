@@ -713,7 +713,9 @@ export const ACTIONS: ActionSpec[] = [
       }
       ctx.record({ kind: "a11y", action: "talkback", summary: `TalkBack ${enabled ? "on" : "off"}`, details: { enabled } });
       if (!enabled) {
-        await ctx.shell.run("settings delete secure enabled_accessibility_services; settings put secure accessibility_enabled 0");
+        const services=await ctx.shell.run("settings get secure enabled_accessibility_services");
+        const remaining=services.trim().split(":").map(service=>service.trim()).filter(service=>service!=="null" && service && !/talkback/i.test(service));
+        await ctx.shell.run(`settings put secure enabled_accessibility_services ${shellQuote(remaining.join(":"))}; settings put secure accessibility_enabled ${remaining.length?1:0}`);
         return { enabled: false };
       }
       const services = await ctx.shell.run("dumpsys accessibility 2>/dev/null | grep -io '[a-z0-9_.]*talkback[a-z0-9_.]*/[a-z0-9_.]*TalkBackService' | head -1");
@@ -724,7 +726,9 @@ export const ACTIONS: ActionSpec[] = [
         if (!p) throw new ActionError("TalkBack is not installed on this image (use a Google APIs / Play image)", "unsupported");
         component = `${p}/com.google.android.marvin.talkback.TalkBackService`;
       }
-      await ctx.shell.run(`settings put secure enabled_accessibility_services ${component}; settings put secure accessibility_enabled 1`);
+      const current=await ctx.shell.run("settings get secure enabled_accessibility_services");
+      const merged=[...new Set([...current.trim().split(":").map(service=>service.trim()).filter(service=>service!=="null"&&service),component])];
+      await ctx.shell.run(`settings put secure enabled_accessibility_services ${shellQuote(merged.join(":"))}; settings put secure accessibility_enabled 1`);
       return { enabled: true, service: component };
     },
   },

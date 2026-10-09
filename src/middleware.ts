@@ -623,6 +623,24 @@ export function emuMiddleware(
           sendJson(res, 200, await workspace.currentPreset(session));
           return;
         }
+        if (endpoint === "/log-history" && req.method === "GET") {
+          const query = new URL(rawUrl, "http://x").searchParams;
+          const start = Number(query.get("start") ?? 0),
+            end = Number(query.get("end") ?? Date.now());
+          if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) {
+            sendJson(res, 400, {
+              error: "bad_request",
+              message: "Invalid log time range",
+            });
+            return;
+          }
+          sendJson(res, 200, {
+            logs: session.logsBetween(start, end),
+            bounded: true,
+            maxLines: 10000,
+          });
+          return;
+        }
         if (endpoint === "/metrics") {
           sendJson(res, 200, await session.performance());
           return;
@@ -716,7 +734,7 @@ export function emuMiddleware(
           const media = workspace.device(session).media;
           const result =
             body.op === "start"
-              ? await media.start(body)
+              ? await media.start(body, authorized)
               : body.op === "stop"
                 ? await media.stop()
                 : body.op === "screenshot"
@@ -737,7 +755,7 @@ export function emuMiddleware(
               res.destroy();
               return;
             }
-            const capture = await media.convert(artifact[1]!, body);
+            const capture = await media.convert(artifact[1]!, body, authorized);
             sendJson(res, 200, { capture });
             return;
           }
@@ -786,10 +804,11 @@ export function emuMiddleware(
               )
                 handleQualityStream(
                   helper.serial,
-                  session.screenConfig(),
+                  () => session.screenConfig(),
                   parseQuality(Object.fromEntries(query)),
                   req,
                   res,
+                  async () => (await session.screenshot())?.data ?? null,
                 );
               else session.handleAvcc(req, res);
             }

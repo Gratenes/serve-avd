@@ -3,7 +3,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { adbPath } from "./adb";
 import { fitToCap } from "./capture";
-import { AvccEncoder } from "./h264";
+import { AvccEncoder, wrapEnvelope, AVCC_TAG_SEED } from "./h264";
 import type { StreamQuality } from "./workspace-types";
 const active = new Map<string, number>();
 export function parseQuality(value: Record<string, unknown>): StreamQuality {
@@ -29,18 +29,65 @@ export function qualitySize(
 ): string {
   const cap =
     quality.resolution === "native"
-      ? 1920
+      ? Math.max(size.width, size.height)
       : (Number(quality.resolution.slice(0, -1)) *
           Math.max(size.width, size.height)) /
         Math.min(size.width, size.height);
   return fitToCap(size.width, size.height, cap);
 }
+export function qualityEncoderArgs(quality: StreamQuality): string[] {
+  return [
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    "-probesize",
+    "32",
+    "-analyzeduration",
+    "0",
+    "-use_wallclock_as_timestamps",
+    "1",
+    "-flags",
+    "low_delay",
+    "-f",
+    "h264",
+    "-i",
+    "pipe:0",
+    "-an",
+    // select caps real changing frames; fps duplicates static frames and waits for the next input.
+    "-vf",
+    `select=isnan(prev_selected_t)+gte(t-prev_selected_t\\,${1 / quality.fps})`,
+    "-fps_mode",
+    "passthrough",
+    "-c:v",
+    "libx264",
+    "-threads",
+    "1",
+    "-preset",
+    "ultrafast",
+    "-tune",
+    "zerolatency",
+    "-b:v",
+    `${quality.bitRateMbps}M`,
+    "-maxrate",
+    `${quality.bitRateMbps}M`,
+    "-bufsize",
+    `${quality.bitRateMbps}M`,
+    "-g",
+    String(quality.fps),
+    "-f",
+    "h264",
+    "pipe:1",
+  ];
+}
 export function handleQualityStream(
   serial: string,
-  size: { width: number; height: number },
+  size:
+    | { width: number; height: number }
+    | (() => { width: number; height: number }),
   quality: StreamQuality,
-  req: IncomingMessage,
+  _req: IncomingMessage,
   res: ServerResponse,
+  seed?: () => Promise<Buffer | null>,
 ): void {
   if ((active.get(serial) ?? 0) >= 4) {
     res.writeHead(429, { "Content-Type": "application/json" });
@@ -53,17 +100,22 @@ export function handleQualityStream(
     return;
   }
   active.set(serial, (active.get(serial) ?? 0) + 1);
-  let stopped = false;
-  let capture: ChildProcess | undefined;
-  let encoder: ChildProcess | undefined;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let settle: ReturnType<typeof setTimeout> | undefined;
+  let stopped = false,
+    generation = 0;
+  let capture: ChildProcess | undefined, encoder: ChildProcess | undefined;
+  let restartTimer: ReturnType<typeof setTimeout> | undefined;
+  let settleTimer: ReturnType<typeof setTimeout> | undefined;
+  let rotationTimer: ReturnType<typeof setInterval> | undefined;
+  const dimensions = () => (typeof size === "function" ? size() : size);
+  let geometry = dimensions();
   const stop = () => {
     if (stopped) return;
     stopped = true;
+    generation++;
     active.set(serial, Math.max(0, (active.get(serial) ?? 1) - 1));
-    if (timer) clearTimeout(timer);
-    if (settle) clearTimeout(settle);
+    if (restartTimer) clearTimeout(restartTimer);
+    if (settleTimer) clearTimeout(settleTimer);
+    if (rotationTimer) clearInterval(rotationTimer);
     capture?.kill("SIGKILL");
     encoder?.kill("SIGKILL");
   };
@@ -72,12 +124,26 @@ export function handleQualityStream(
     "Cache-Control": "no-cache, no-store",
     Connection: "keep-alive",
   });
+  res.flushHeaders();
   res.once("close", stop);
   res.once("error", stop);
+  let videoFrame = false;
+  const sendSeed = () => {
+    if (seed)
+      void seed()
+        .then((data) => {
+          if (data && !stopped && !videoFrame && !res.destroyed)
+            res.write(wrapEnvelope(AVCC_TAG_SEED, data));
+        })
+        .catch(() => {});
+  };
+  sendSeed();
   const start = () => {
     if (stopped) return;
+    const current = ++generation;
+    geometry = dimensions();
     const parser = new AvccEncoder();
-    capture = spawn(
+    const recorder = spawn(
       adbPath(),
       [
         "-s",
@@ -88,77 +154,72 @@ export function handleQualityStream(
         "--time-limit",
         "179",
         "--size",
-        qualitySize(quality, size),
+        qualitySize(quality, geometry),
         "--bit-rate",
         String(Math.round(quality.bitRateMbps * 1e6)),
         "-",
       ],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
-    encoder = spawn(
+    const transcoder = spawn(
       process.env.SERVE_AVD_FFMPEG || "ffmpeg",
-      [
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-f",
-        "h264",
-        "-i",
-        "pipe:0",
-        "-an",
-        "-vf",
-        `fps=${quality.fps}`,
-        "-c:v",
-        "libx264",
-        "-preset",
-        "ultrafast",
-        "-tune",
-        "zerolatency",
-        "-b:v",
-        `${quality.bitRateMbps}M`,
-        "-maxrate",
-        `${quality.bitRateMbps}M`,
-        "-bufsize",
-        `${quality.bitRateMbps}M`,
-        "-g",
-        String(quality.fps),
-        "-f",
-        "h264",
-        "pipe:1",
-      ],
+      qualityEncoderArgs(quality),
       { stdio: ["pipe", "pipe", "pipe"] },
     );
-    capture.stdout!.pipe(encoder.stdin!);
-    capture.stderr!.resume();
-    encoder.stderr!.resume();
-    encoder.stdin!.on("error", () => {});
+    capture = recorder;
+    encoder = transcoder;
+    recorder.stdout!.pipe(transcoder.stdin!);
+    recorder.stderr!.resume();
+    transcoder.stderr!.resume();
+    transcoder.stdin!.on("error", () => {});
     const forward = (events: ReturnType<AvccEncoder["push"]>) => {
+      if (stopped || generation !== current) return;
       for (const event of events) {
-        if (stopped) return;
         if (res.writableLength > 2 * 1024 * 1024) {
           res.destroy();
           return;
         }
+        if (event.kind === "keyframe" || event.kind === "delta")
+          videoFrame = true;
         res.write(event.envelope);
       }
     };
-    encoder.stdout!.on("data", (chunk: Buffer) => {
+    transcoder.stdout!.on("data", (chunk: Buffer) => {
+      if (generation !== current) return;
       forward(parser.push(chunk));
-      if (settle) clearTimeout(settle);
-      settle = setTimeout(() => forward(parser.flush()), 25);
+      if (settleTimer) clearTimeout(settleTimer);
+      settleTimer = setTimeout(() => forward(parser.flush()), 25);
     });
-    capture.on("error", () => res.destroy());
-    encoder.on("error", () => res.destroy());
-    encoder.on("close", (code) => {
-      capture?.kill("SIGKILL");
-      if (stopped) return;
+    recorder.on("error", () => res.destroy());
+    transcoder.on("error", () => res.destroy());
+    recorder.on("close", (code) => {
+      transcoder.stdin!.end();
+      if (code !== 0 && !stopped && generation === current) res.destroy();
+    });
+    transcoder.on("close", (code) => {
+      recorder.kill("SIGKILL");
+      if (stopped || generation !== current) return;
       if (code !== 0) {
         res.destroy();
         return;
       }
-      timer = setTimeout(start, 250);
-      timer.unref();
+      restartTimer = setTimeout(start, 250);
+      restartTimer.unref();
     });
   };
   start();
+  rotationTimer = setInterval(() => {
+    const next = dimensions();
+    if (next.width !== geometry.width || next.height !== geometry.height) {
+      generation++;
+      if (restartTimer) clearTimeout(restartTimer);
+      capture?.kill("SIGKILL");
+      encoder?.kill("SIGKILL");
+      if (settleTimer) clearTimeout(settleTimer);
+      videoFrame = false;
+      sendSeed();
+      start();
+    }
+  }, 1000);
+  rotationTimer.unref();
 }
