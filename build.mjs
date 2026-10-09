@@ -101,6 +101,6 @@ for (const family of ["ibm-plex-sans", "ibm-plex-mono"]) {
 }
 
 // Embed the supplied design's fonts so the preview also works offline and behind Access.
-writeFileSync("dist/client.css", fontCss + "\n" + ["client.css", "inspector.css", "workspace-remote.css"].map(name => readFileSync(`src/client/${name}`, "utf8")).join("\n"));
+writeFileSync("dist/client.css", fontCss + "\n" + ["client.css", "inspector.css", "workspace-remote.css", "logcat.css"].map(name => readFileSync(`src/client/${name}`, "utf8")).join("\n"));
 
 console.log("build complete");

@@ -8,6 +8,7 @@ import { icons, type IconName } from "./icons";
 import { WorkspaceRemote } from "./remote-controls";
 import { WorkspaceCanvas, type CanvasLayout } from "./workspace-canvas";
 import { workspaceIcons } from "./workspace-icons";
+import { WorkspaceLogcat, createLogcatState } from "./logcat";
 
 declare const __SERVE_AVD_VERSION__: string | undefined;
 
@@ -1116,10 +1117,10 @@ class Panes {
   private renderGeneration = 0;
   private readonly tabs = new Map<string, HTMLButtonElement>();
   private active: string | null = null;
-  private logsSource: EventSource | null = null;
+  private logsView: WorkspaceLogcat | null = null;
+  private readonly logcatState = createLogcatState();
+  private readonly logcatBadge = el("span", { class: "logcat-badge", "aria-hidden": "true", hidden: "" });
   private eventsSource: EventSource | null = null;
-  private logsPaused = false;
-  private logsFilter = "";
 
   constructor(
     private readonly api: ApiState,
@@ -1132,6 +1133,7 @@ class Panes {
     const tabBar = el("div", { class: "pane-tabs", "aria-label": "Inspector sections" });
     for (const name of ["devices", "tools", "logs"]) {
       const tab = el("button", { class: "pane-tab", type: "button", text: name === "tools" ? "Controls" : name === "logs" ? "Logcat" : "Devices", "data-pane": name, "aria-pressed": "false" });
+      if (name === "logs") tab.append(this.logcatBadge);
       tab.addEventListener("click", () => this.open(name));
       this.tabs.set(name, tab);
       tabBar.append(tab);
@@ -1182,8 +1184,12 @@ class Panes {
   }
 
   private stopStreams(): void {
-    this.logsSource?.close();
-    this.logsSource = null;
+    this.logsView?.destroy();
+    this.logsView = null;
+    this.logcatBadge.hidden = true;
+    this.logcatBadge.textContent = "";
+    this.logcatBadge.className = "logcat-badge";
+    this.tabs.get("logs")?.removeAttribute("title");
     this.eventsSource?.close();
     this.eventsSource = null;
   }
@@ -1626,61 +1632,18 @@ class Panes {
   private renderLogs(): void {
     const generation = this.renderGeneration;
     const target = this.targetView();
-    const wrap = el("div", { class: "logs" });
     if (!target) {
-      wrap.append(el("p", { class: "muted", text: "Select a device to view Logcat." }));
-      this.body.replaceChildren(wrap);
+      this.body.replaceChildren(el("p", { class: "muted inspector-empty", text: "Select a device to view Logcat." }));
       return;
     }
-    const filter = el("input", { class: "input", placeholder: "Filter logcat…", type: "search", "aria-label": "Filter Logcat" });
-    filter.value = this.logsFilter;
-    const minimum = el("select", { class: "select log-minimum", "aria-label": "Minimum log level" });
-    for (const [value, text] of [["0", "All levels"], ["2", "Debug+"], ["3", "Info+"], ["4", "Warning+"], ["5", "Error+"]]) minimum.append(el("option", { value, text }));
-    const list = el("div", { class: "log-lines", role: "log", "aria-label": `Logcat for ${target.entry.name}` });
-    const count = el("span", { class: "log-count", text: "Waiting for logs…" });
-    const levels: Record<string, number> = { V: 1, D: 2, I: 3, W: 4, E: 5, F: 6, A: 6 };
-    const records: Array<{ line: string; level: string; time: string; tag: string; message: string }> = [];
-    const render = () => {
-      const fragment = document.createDocumentFragment();
-      let shown = 0;
-      for (const record of records) {
-        if (this.logsFilter && !record.line.toLowerCase().includes(this.logsFilter)) continue;
-        if (record.level && (levels[record.level] ?? 0) < Number(minimum.value)) continue;
-        const row = el("div", { class: `log-line log-level-${record.level.toLowerCase() || "unknown"}` });
-        if (record.level) row.append(el("span", { class: "log-time", text: record.time }), el("span", { class: "log-level", text: record.level }), el("span", { class: "log-tag", text: record.tag }), el("span", { class: "log-message", text: record.message }));
-        else row.textContent = record.line;
-        fragment.append(row);
-        shown++;
-      }
-      list.replaceChildren(fragment);
-      list.scrollTop = list.scrollHeight;
-      count.textContent = `${shown} of ${records.length} lines`;
-    };
-    filter.addEventListener("input", () => { this.logsFilter = filter.value.toLowerCase(); render(); });
-    minimum.addEventListener("change", render);
-    const pause = button(this.logsPaused ? "Resume" : "Pause", "Pause/resume the log stream", () => {
-      this.logsPaused = !this.logsPaused;
-      pause.textContent = this.logsPaused ? "Resume" : "Pause";
-      pause.setAttribute("aria-pressed", String(this.logsPaused));
+    this.logsView = new WorkspaceLogcat(target.entry, this.logcatState, (count, level) => {
+      if (generation !== this.renderGeneration) return;
+      this.logcatBadge.hidden = count === 0;
+      this.logcatBadge.textContent = String(count);
+      this.logcatBadge.className = `logcat-badge log-severity-${level.toLowerCase()}`;
+      this.tabs.get("logs")!.title = count ? `${count} warnings/errors; highest severity ${level}` : "Logcat";
     });
-    pause.setAttribute("aria-pressed", String(this.logsPaused));
-    const clear = button("Clear", "Clear displayed logs", () => { records.length = 0; render(); });
-    wrap.append(el("div", { class: "logs-head" }, filter), el("div", { class: "logs-toolbar" }, minimum, pause, clear), list, count);
-    this.body.replaceChildren(wrap);
-    this.logsSource = new EventSource(target.entry.logsEndpoint);
-    this.logsSource.onmessage = (event) => {
-      if (this.logsPaused || generation !== this.renderGeneration) return;
-      try {
-        const { line } = JSON.parse(event.data) as { line: string };
-        if (typeof line !== "string") return;
-        console.log(`[logcat] ${line}`);
-        const thread = line.match(/^(\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+)\s+\d+\s+\d+\s+([VDIWEFA])\s+([^:]+):\s?(.*)$/);
-        const brief = line.match(/^([VDIWEFA])\/([^(:]+)(?:\(\s*\d+\))?:\s?(.*)$/);
-        records.push({ line, level: thread?.[2] ?? brief?.[1] ?? "", time: thread?.[1]?.split(/\s+/)[1] ?? "", tag: (thread?.[3] ?? brief?.[2] ?? "").trim(), message: thread?.[4] ?? brief?.[3] ?? line });
-        if (records.length > 1_000) records.shift();
-        render();
-      } catch {}
-    };
+    this.body.replaceChildren(this.logsView.root);
   }
 
 }
