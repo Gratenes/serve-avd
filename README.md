@@ -20,6 +20,7 @@ It is a faithful Android port of [serve-sim](https://github.com/EvanBacon/serve-
 - Smooth H.264 video stream in the browser (WebCodecs), with instant paint on connect — no waiting for the next frame.
 - Full interaction: tap, drag, and fling with the mouse; scroll with the wheel.
 - Android navigation from the browser: Back, Home, Recents, power, volume, rotate, theme toggle, screenshot.
+- Optional TV remote on each preview: D-pad/OK, Back/Home, playback, volume, Menu/Search, and Power for Android TV emulators and ADB-connected TVs.
 - Keyboard forwarding — type into the emulator directly, Escape acts as Back, ⌘⇧H goes Home.
 - logcat is forwarded to the browser (and mirrored into the browser console for browser-use MCP tools to read).
 - Recent actions are available in the browser Tools panel and `serve-avd event-log` — and export as a replayable script (`serve-avd replay`).
@@ -29,6 +30,16 @@ It is a faithful Android port of [serve-sim](https://github.com/EvanBacon/serve-
 - Emulator controls from the CLI, Tools panel, SDK and MCP: location (+ routes), network conditions, battery, fingerprint, calls & SMS, font scale / density / locale / TalkBack, snapshots (save/load to reset state), app install/launch/stop/clear/open-URL, and `shell`/`push`/`pull` passthrough.
 - Multiple emulators at once — boot and attach AVDs straight from the Devices panel.
 - Every command works headless (straight over adb) when no server is running, and through the server (shared event log, live viewers) when one is.
+
+### TV remote
+
+For a TV, open **TV remote** below that device's preview. The remote controls
+only that device. Focus the remote panel to use arrow keys, Enter for OK, and
+Escape for Back; Tab moves between buttons, where Enter/Space activates the
+focused button. Controls are disabled until the input connection is ready and
+commands are not queued during reconnects. This uses the existing ADB device
+connection; it does not discover or pair with TVs. Button holding/repeat and
+voice input are not supported.
 
 ## Why?
 
