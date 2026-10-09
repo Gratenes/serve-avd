@@ -85,6 +85,8 @@ export class WorkspaceAutomate {
   private message = "";
   private isError = false;
   private macroStatus: HTMLElement | null = null;
+  private recentInputs: HTMLElement | null = null;
+  private recordingTimer: ReturnType<typeof setInterval> | null = null;
   private runningTargets: FeatureDevice[] = [];
   constructor(
     private readonly storageKey: string,
@@ -161,8 +163,7 @@ export class WorkspaceAutomate {
     recording.steps.push(step);
     recording.last = now;
     this.onRecordChange(true, recording.steps.length);
-    if (this.macroStatus)
-      this.macroStatus.textContent = `Recording ${recording.steps.length} steps · ${Math.round((now - recording.started) / 1000)}s`;
+    this.refreshRecordingStatus();
   }
   observeLink(serial: string, url: string): void {
     if (this.recording?.device === serial) {
@@ -174,6 +175,7 @@ export class WorkspaceAutomate {
       });
       this.recording.last = now;
       this.onRecordChange(true, this.recording.steps.length);
+      this.refreshRecordingStatus();
     }
   }
   toggleRecording(): void {
@@ -196,10 +198,54 @@ export class WorkspaceAutomate {
       started: performance.now(),
     };
     this.onRecordChange(true, 0);
+    this.recordingTimer = setInterval(() => this.refreshRecordingStatus(), 500);
     this.render();
+  }
+  private refreshRecordingStatus(): void {
+    if (!this.recording) return;
+    const seconds = Math.floor(
+      (performance.now() - this.recording.started) / 1000,
+    );
+    const elapsed = `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+    if (this.macroStatus)
+      this.macroStatus.textContent = `Recording ${this.recording.steps.length} steps · ${elapsed}`;
+    if (this.recentInputs)
+      this.recentInputs.textContent = this.recording.steps
+        .slice(-8)
+        .map((step) => {
+          if (step.kind === "KEY")
+            return (
+              (
+                {
+                  "dpad-up": "↑",
+                  "dpad-down": "↓",
+                  "dpad-left": "←",
+                  "dpad-right": "→",
+                  "dpad-center": "OK",
+                } as Record<string, string>
+              )[step.value] ?? step.value
+            );
+          if (step.kind === "INPUT")
+            return `Touch ${step.body?.type ?? "scroll"}`;
+          return `${step.kind} ${step.value.length > 28 ? step.value.slice(0, 28) + "…" : step.value}`;
+        })
+        .join("  ");
+  }
+  private durationLabel(steps: MacroStep[]): string {
+    const fixedMs = steps.reduce(
+      (sum, step) =>
+        sum +
+        step.waitMs +
+        (step.kind === "WAIT" ? Number(step.value) || 0 : 0),
+      0,
+    );
+    const checks = steps.filter((step) => step.kind === "CHECK").length;
+    return `~${(fixedMs / 1000).toFixed(1).replace(/\.0$/, "")} s${checks ? ` + ${checks} screen check${checks === 1 ? "" : "s"} (≤10 s each)` : ""}`;
   }
   private stopRecording(save: boolean): void {
     const recording = this.recording;
+    if (this.recordingTimer) clearInterval(this.recordingTimer);
+    this.recordingTimer = null;
     this.recording = null;
     this.onRecordChange(false, 0);
     if (save && recording?.steps.length) {
@@ -300,7 +346,7 @@ export class WorkspaceAutomate {
           ),
           node(
             "span",
-            `${macro.steps.length} steps · used ${macro.uses ?? 0}×`,
+            `${macro.steps.length} steps · ${this.durationLabel(macro.steps)} · used ${macro.uses ?? 0}×`,
             "feature-meta",
           ),
         ),
@@ -319,8 +365,11 @@ export class WorkspaceAutomate {
       this.recording ? `Recording ${this.recording.steps.length} steps` : "",
       "feature-meta",
     );
+    this.recentInputs = node("div", "", "macro-recent-inputs");
+    this.recentInputs.setAttribute("aria-label", "Recent recorded inputs");
     recording.append(
       this.macroStatus,
+      this.recentInputs,
       row(
         control(this.recording ? "Stop & save" : "● Record", () =>
           this.toggleRecording(),
@@ -342,6 +391,7 @@ export class WorkspaceAutomate {
         }),
       ),
     );
+    this.refreshRecordingStatus();
     const panel = section("Saved macros", recording, list);
     this.root.append(panel);
     const macro = this.macros.find((item) => item.id === this.selectedMacro);
@@ -351,6 +401,11 @@ export class WorkspaceAutomate {
       macro.name = name.value.trim() || macro.name;
       this.persist();
     });
+    const duration = node(
+      "span",
+      this.durationLabel(macro.steps),
+      "feature-meta macro-duration",
+    );
     const steps = node("ol", "", "macro-steps");
     let dragged = -1;
     macro.steps.forEach((step, index) => {
@@ -373,6 +428,7 @@ export class WorkspaceAutomate {
         step.value = value.value;
         step.waitMs = Number(wait.value);
         this.persist();
+        duration.textContent = this.durationLabel(macro.steps);
         this.stepIndex = 0;
       };
       kind.addEventListener("change", change);
@@ -483,6 +539,7 @@ export class WorkspaceAutomate {
     };
     panel.append(
       name,
+      duration,
       steps,
       control("+ Add step", () => {
         macro.steps.push({ kind: "KEY", value: "dpad-center", waitMs: 300 });

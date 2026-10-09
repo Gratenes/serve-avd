@@ -178,25 +178,25 @@ test("Activity uses real device lanes and selection saves a named macro with res
 test("Observed crashes appear in header alerts and Apps with actual report context", async () => {
   const { h, state } = await observedHarness();
   try {
-    state
-      .get("phone")
-      .crashes.push({
-        id: "fatal1",
-        device: "phone",
-        timestamp: new Date().toISOString(),
-        packageName: "demo.app",
-        thread: "main",
-        exception: "NullPointerException",
-        message: "Demo crashed",
-        lines: [
-          "java.lang.NullPointerException",
-          "at demo.app.Player.run(Player.java:42)",
-        ],
-        logs: ["pre-crash line"],
-        versionName: "2.0",
-        versionCode: "20",
-        apiLevel: "34",
-      });
+    state.get("phone").crashes.push({
+      id: "fatal1",
+      device: "phone",
+      timestamp: new Date().toISOString(),
+      packageName: "demo.app",
+      thread: "main",
+      exception: "NullPointerException",
+      message: "Demo crashed",
+      lines: [
+        "java.lang.NullPointerException",
+        "at demo.app.Player.run(Player.java:42)",
+        "at android.os.Handler.handleCallback(Handler.java:942)",
+        "at android.os.Looper.loop(Looper.java:200)",
+      ],
+      logs: ["pre-crash line"],
+      versionName: "2.0",
+      versionCode: "20",
+      apiLevel: "34",
+    });
     await h.page
       .locator("[data-device=phone]")
       .getByRole("button", { name: "View crash report", exact: true })
@@ -213,6 +213,41 @@ test("Observed crashes appear in header alerts and Apps with actual report conte
     assert.match(
       await h.page.locator(".workspace-apps").innerText(),
       /Player.java:42/,
+    );
+    const trace = h.page.locator(".workspace-apps .observer-crash-detail");
+    assert.deepEqual(
+      await trace.locator(".crash-line-number").allTextContents(),
+      ["1", "2", "3", "4"],
+    );
+    const framework = trace.locator("details");
+    assert.equal(await framework.getAttribute("open"), null);
+    assert.equal(
+      await framework.locator("summary").innerText(),
+      "2 framework frames",
+    );
+    assert.equal(
+      await framework
+        .getByText("at android.os.Looper.loop(Looper.java:200)", {
+          exact: true,
+        })
+        .isVisible(),
+      false,
+    );
+    await framework.locator("summary").click();
+    assert.equal(
+      await framework
+        .getByText("at android.os.Looper.loop(Looper.java:200)", {
+          exact: true,
+        })
+        .isVisible(),
+      true,
+    );
+    await h.page
+      .getByRole("checkbox", { name: "App frames only", exact: true })
+      .check();
+    assert.deepEqual(
+      await trace.locator(".crash-line-number").allTextContents(),
+      ["1", "2"],
     );
     assert.deepEqual(h.errors, []);
   } finally {

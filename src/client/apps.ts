@@ -15,12 +15,13 @@ interface InstallState {
   message: string;
   percent?: number;
   xhr?: XMLHttpRequest;
-  phase: "upload" | "install" | "done" | "error";
+  phase: "upload" | "install" | "launch" | "done" | "error";
 }
 /** Install jobs belong to their captured device, even when the inspector target changes. */
 export class WorkspaceApps {
   readonly root = node("div", "", "workspace-apps");
   private selected: FeatureDevice | null = null;
+  private launchAfterInstall = false;
   private generation = 0;
   private readonly jobs = new Map<string, InstallState>();
   private readonly badges = new Map<string, HTMLElement>();
@@ -137,7 +138,7 @@ export class WorkspaceApps {
     const serial = device.entry.device;
     if (
       this.jobs.get(serial)?.xhr ||
-      this.jobs.get(serial)?.phase === "install"
+      ["install", "launch"].includes(this.jobs.get(serial)?.phase ?? "")
     ) {
       this.status(
         `An installation is already in progress on ${device.entry.name}.`,
@@ -145,6 +146,7 @@ export class WorkspaceApps {
       );
       return;
     }
+    const launchAfterInstall = this.launchAfterInstall;
     const job: InstallState = {
       message: `Uploading ${file.name}`,
       percent: 0,
@@ -176,22 +178,25 @@ export class WorkspaceApps {
         job.message = `Installing ${file.name}…`;
         this.paintJob(serial);
       };
-      const finish = (error?: string) => {
+      const finish = (error?: string, launched = false) => {
         delete job.xhr;
         job.phase = error ? "error" : "done";
         job.percent = undefined;
-        job.message = error ?? `Installed ${file.name}`;
+        job.message =
+          error ??
+          `${launched ? "Installed and launched" : "Installed"} ${file.name}`;
         this.paintJob(serial);
         if (!error) void this.updateBadge(device);
         if (this.selected?.entry.device === serial) void this.render();
         resolve();
       };
-      xhr.onload = () => {
+      xhr.onload = async () => {
         if (xhr.status === 401) this.onAuthExpired();
         try {
           const data = JSON.parse(xhr.responseText) as {
             error?: string;
             message?: string;
+            app?: InstalledApp | null;
           };
           if (xhr.status < 200 || xhr.status >= 300)
             finish(
@@ -199,7 +204,27 @@ export class WorkspaceApps {
                 data.error ??
                 `Install failed (HTTP ${xhr.status})`,
             );
-          else finish();
+          else if (launchAfterInstall) {
+            void this.updateBadge(device);
+            if (!data.app?.packageName) {
+              finish(
+                "APK installed; launch unavailable because package metadata could not be read.",
+              );
+              return;
+            }
+            delete job.xhr;
+            job.phase = "launch";
+            job.message = `Launching ${data.app.packageName}…`;
+            this.paintJob(serial);
+            try {
+              await deviceAction(device, "launch", {
+                package: data.app.packageName,
+              });
+              finish(undefined, true);
+            } catch (error) {
+              finish(`APK installed; launch failed: ${errorText(error)}`);
+            }
+          } else finish();
         } catch {
           finish("Invalid install response.");
         }
@@ -271,6 +296,14 @@ export class WorkspaceApps {
         event.shiftKey ? this.visibleDevices() : [device],
       );
     });
+    const launch = node("input");
+    launch.type = "checkbox";
+    launch.checked = this.launchAfterInstall;
+    launch.addEventListener("change", () => {
+      this.launchAfterInstall = launch.checked;
+    });
+    const launchLabel = node("label", "", "feature-row");
+    launchLabel.append(launch, node("span", "Launch after install"));
     const installed = section(
       `Installed on ${device.entry.name}`,
       node("p", "Loading apps…", "muted"),
@@ -287,6 +320,7 @@ export class WorkspaceApps {
       recent,
       drop,
       browse,
+      launchLabel,
       node(
         "p",
         "APK files supported. Hold Shift while dropping to install on all visible devices.",
@@ -314,6 +348,14 @@ export class WorkspaceApps {
             "feature-meta",
           ),
         );
+        const metadata: string[] = [];
+        if (app.bytes != null)
+          metadata.push(`${(app.bytes / 1048576).toFixed(1)} MB APK`);
+        if (app.installedAt) metadata.push(`Installed ${app.installedAt}`);
+        if (app.updatedAt && app.updatedAt !== app.installedAt)
+          metadata.push(`Updated ${app.updatedAt}`);
+        if (metadata.length)
+          item.append(node("span", metadata.join(" · "), "feature-meta"));
         const run = async (action: string) => {
           try {
             if (action === "restart") {

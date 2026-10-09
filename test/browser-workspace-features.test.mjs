@@ -17,6 +17,8 @@ async function featureRoutes(h) {
               versionName: "2.0",
               versionCode: "20",
               debuggable: true,
+              bytes: 3145728,
+              installedAt: "2026-10-09 12:30:00",
             },
           ],
         },
@@ -98,15 +100,20 @@ test("Apps installs APK bytes on the captured target and displays real build met
       await h.page.locator(".workspace-apps").innerText(),
       /2.0 MB.*INSTALLED/s,
     );
+    assert.match(
+      await h.page.locator(".workspace-apps").innerText(),
+      /3.0 MB APK.*Installed 2026-10-09 12:30:00/s,
+    );
     await h.page
-      .locator(".workspace-apps input[type=file]")
-      .setInputFiles({
-        name: "demo.apk",
-        mimeType: "application/octet-stream",
-        buffer: Buffer.from("apk test bytes"),
-      });
+      .getByRole("checkbox", { name: "Launch after install", exact: true })
+      .check();
+    await h.page.locator(".workspace-apps input[type=file]").setInputFiles({
+      name: "demo.apk",
+      mimeType: "application/octet-stream",
+      buffer: Buffer.from("apk test bytes"),
+    });
     await h.page
-      .getByText("Installed demo.apk", { exact: true })
+      .getByText("Installed and launched demo.apk", { exact: true })
       .first()
       .waitFor();
     assert.ok(
@@ -115,6 +122,14 @@ test("Apps installs APK bytes on the captured target and displays real build met
           call.path === "/phone/apk" &&
           call.file === "demo.apk" &&
           call.bytes === 14,
+      ),
+    );
+    assert.ok(
+      calls.some(
+        (call) =>
+          call.path === "/phone/action" &&
+          call.action === "launch" &&
+          call.params.package === "demo.app",
       ),
     );
     assert.deepEqual(h.errors, []);
@@ -261,6 +276,120 @@ test("Snapshots require an explicit restore choice and boot default is persisted
     );
     assert.equal(mutations[0].params.op, "save");
     assert.equal(mutations[1].params.op, "load");
+    assert.deepEqual(h.errors, []);
+  } finally {
+    await h.close();
+  }
+});
+
+test("Macro recording shows live elapsed time and recent inputs; editor estimates configured waits", async () => {
+  const h = await harness({ width: 1440, height: 1000 });
+  try {
+    await featureRoutes(h);
+    await h.page.locator("[data-pane=automate]").click();
+    const automate = h.page.locator(".workspace-automate");
+    await automate
+      .getByRole("button", { name: "● Record", exact: true })
+      .click();
+    await h.page
+      .getByText("Recording 0 steps · 00:01", { exact: true })
+      .waitFor();
+    await h.page.locator(".workspace-remote-dpad-up").click();
+    await h.page.locator(".workspace-remote-dpad-center").click();
+    assert.equal(
+      await h.page
+        .getByLabel("Recent recorded inputs", { exact: true })
+        .innerText(),
+      "↑ OK",
+    );
+    await automate
+      .getByRole("button", { name: "Stop & save", exact: true })
+      .click();
+    await automate
+      .getByRole("button", { name: "New macro", exact: true })
+      .click();
+    await h.page
+      .getByRole("combobox", { name: "Step 1 type", exact: true })
+      .selectOption("WAIT");
+    await h.page
+      .getByRole("textbox", { name: "Step 1 value", exact: true })
+      .fill("2000");
+    await h.page
+      .getByRole("textbox", { name: "Step 1 value", exact: true })
+      .press("Tab");
+    await h.page
+      .getByRole("spinbutton", { name: "Step 1 delay ms", exact: true })
+      .fill("1250");
+    await h.page
+      .getByRole("spinbutton", { name: "Step 1 delay ms", exact: true })
+      .press("Tab");
+    assert.equal(await h.page.locator(".macro-duration").innerText(), "~3.3 s");
+    assert.deepEqual(h.errors, []);
+  } finally {
+    await h.close();
+  }
+});
+
+test("A successful install refreshes the version badge even when optional launch fails", async () => {
+  const h = await harness({ width: 1440, height: 1000 });
+  let installed = false;
+  try {
+    await h.page.route("**/*", async (route) => {
+      const req = route.request(),
+        path = new URL(req.url()).pathname;
+      if (path.endsWith("/apps"))
+        return route.fulfill({
+          json: {
+            apps: installed
+              ? [
+                  {
+                    packageName: "demo.app",
+                    versionName: "3.0",
+                    versionCode: "30",
+                    debuggable: true,
+                  },
+                ]
+              : [],
+          },
+        });
+      if (path.endsWith("/foreground"))
+        return route.fulfill({ json: { packageName: "demo.app" } });
+      if (path.endsWith("/builds"))
+        return route.fulfill({ json: { builds: [] } });
+      if (path.endsWith("/apk")) {
+        installed = true;
+        return route.fulfill({ json: { app: { packageName: "demo.app" } } });
+      }
+      if (path.endsWith("/action") && req.postDataJSON().action === "launch")
+        return route.fulfill({
+          json: { ok: false, message: "No launchable activity" },
+        });
+      return route.continue();
+    });
+    await h.page.locator("[data-pane=apps]").click();
+    await h.page
+      .getByText("No installed user apps.", { exact: true })
+      .waitFor();
+    await h.page
+      .getByRole("checkbox", { name: "Launch after install", exact: true })
+      .check();
+    await h.page
+      .locator(".workspace-apps input[type=file]")
+      .setInputFiles({
+        name: "demo.apk",
+        mimeType: "application/octet-stream",
+        buffer: Buffer.from("apk bytes"),
+      });
+    await h.page
+      .getByText("APK installed; launch failed: No launchable activity", {
+        exact: true,
+      })
+      .first()
+      .waitFor();
+    await h.page
+      .locator("[data-device=phone] .installed-version")
+      .getByText("demo.app 3.0 (30) · debug", { exact: true })
+      .waitFor();
     assert.deepEqual(h.errors, []);
   } finally {
     await h.close();

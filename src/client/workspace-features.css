@@ -251,3 +251,40 @@
 .workspace-drawer [role="status"]:empty {
   display: none;
 }
+.macro-recent-inputs {
+  color: #c9ced3;
+  font:
+    11px "IBM Plex Mono",
+    monospace;
+  min-height: 16px;
+  overflow-wrap: anywhere;
+}
+.macro-recent-inputs:empty {
+  display: none;
+}
+.macro-duration {
+  color: #a3a9b0;
+}
+
+.crash-trace-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.crash-line-number {
+  color: #737b86;
+  min-width: 2em;
+  text-align: right;
+  flex-shrink: 0;
+  user-select: none;
+}
+.crash-line-text {
+  overflow-wrap: anywhere;
+}
+.crash-framework-group {
+  color: #929aa4;
+}
+.crash-framework-group summary {
+  cursor: pointer;
+  padding: 5px 0;
+}

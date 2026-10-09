@@ -716,17 +716,33 @@ export class WorkspaceObservability {
         }),
       );
       const trace = node("div", "", "observer-crash-detail");
-      for (const line of report.lines) {
+      let frameworkGroup: HTMLDetailsElement | null = null;
+      let frameworkCount = 0;
+      report.lines.forEach((line, lineIndex) => {
         const own = !!report.packageName && line.includes(report.packageName);
-        if (
-          ownOnly &&
-          !own &&
-          !line.startsWith("Caused by") &&
-          !line.includes("Exception")
-        )
-          continue;
-        trace.append(node("div", line, own ? "own-frame" : ""));
-      }
+        const frame = /^\s*at\s/.test(line);
+        if (ownOnly && frame && !own) return;
+        const traceRow = node("div", "", `crash-trace-row${own ? " own-frame" : ""}`);
+        traceRow.append(
+          node("span", String(lineIndex + 1), "crash-line-number"),
+          node("span", line, "crash-line-text"),
+        );
+        if (frame && !own) {
+          if (!frameworkGroup) {
+            frameworkGroup = node("details", "", "crash-framework-group");
+            frameworkGroup.append(node("summary"));
+            trace.append(frameworkGroup);
+            frameworkCount = 0;
+          }
+          frameworkCount++;
+          frameworkGroup.querySelector("summary")!.textContent =
+            `${frameworkCount} framework frame${frameworkCount === 1 ? "" : "s"}`;
+          frameworkGroup.append(traceRow);
+        } else {
+          frameworkGroup = null;
+          trace.append(traceRow);
+        }
+      });
       root.append(trace);
       const reportText = `${report.exception}: ${report.message}\n${report.device} ${report.packageName ?? ""} ${report.timestamp}\n${report.lines.join("\n")}\n\nPre-crash logcat:\n${report.logs.join("\n")}`;
       root.append(
