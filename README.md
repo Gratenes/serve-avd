@@ -57,7 +57,7 @@ It's also a great way to hand an emulator to an AI agent: everything is driveabl
 
 ## Install
 
-Requires the Android SDK platform-tools (`adb`; the `emulator` binary is needed to boot AVDs by name) and a [maintained Node.js LTS release](https://nodejs.org/en/about/previous-releases) (Node 18.17+). serve-avd finds your SDK via `$ANDROID_HOME`, `$ANDROID_SDK_ROOT`, or the default SDK locations on macOS and Linux.
+Requires the Android SDK platform-tools (`adb`; the `emulator` binary is needed to boot AVDs by name) and a [maintained Node.js LTS release](https://nodejs.org/en/about/previous-releases) (Node 22+; the persistent SQLite driver uses a native addon). serve-avd finds your SDK via `$ANDROID_HOME`, `$ANDROID_SDK_ROOT`, or the default SDK locations on macOS and Linux.
 
 The H.264 stream needs `screenrecord --output-format=h264` (present on every emulator image from the last decade). If it's unavailable, serve-avd automatically falls back to an MJPEG screenshot stream.
 
@@ -245,6 +245,57 @@ emulator -avd Pixel_9_Pro_XL -camera-back virtualscene -camera-front webcam0
 
 Inside the virtual scene, custom posters can be placed via the emulator's extended controls. (This replaces serve-sim's dylib-injection camera feature — Android provides the equivalent natively.)
 
+## Authentication and operation
+
+The library retains local unauthenticated compatibility: `emuMiddleware({ auth: false })` explicitly selects it, and omitted `auth` has the same behavior. Use this only for a trusted local development server. The standalone CLI enables authentication when configured through flags or environment variables. Supplying only part of the configuration fails startup before devices are resolved or launched; invalid or unavailable account storage fails startup too. A hosted wrapper must require both values itself and pass `auth` explicitly.
+
+```sh
+# Keep account data outside the checkout, in a directory owned by the service user.
+export SERVE_AVD_AUTH_DATABASE=/var/lib/serve-avd/auth.sqlite
+export SERVE_AVD_AUTH_ORIGIN=https://serve-avd-dev.embedez.com
+
+# Run locally as the service user, in an interactive terminal.
+node dist/serve-avd.js auth-bootstrap
+# Prompts for username, then a hidden password and confirmation.
+
+node dist/serve-avd.js emulator-5554 --host 127.0.0.1 --port 3201
+```
+
+Equivalent flags are `--auth-database <absolute-path>` and `--auth-origin <origin>`. The origin is the exact browser-facing HTTP(S) origin, including a nondefault port, with no path or trailing slash. Use `http://localhost:3200` for local testing; HTTPS origins set Secure cookies even when the service itself listens on HTTP behind a proxy. Arbitrary forwarded headers are never trusted to infer origin or client address. HTTPS session cookies will not authenticate a browser opening the plain HTTP localhost URL; test direct-origin authorization with explicit HTTP requests instead.
+
+Default sessions expire after 12 hours absolutely or 1 hour idle. Override with `--auth-absolute-ttl <milliseconds>` / `SERVE_AVD_AUTH_ABSOLUTE_TTL_MS` and `--auth-idle-ttl <milliseconds>` / `SERVE_AVD_AUTH_IDLE_TTL_MS`. Accounts and hashed opaque sessions persist through restarts. Cookies are HttpOnly, SameSite=Lax, scoped to the mount path and omit Domain. Mutating requests require the configured Origin and `X-CSRF-Token`; login requires the Origin too. Unexpected WebSocket origins are rejected. Revocation closes active sockets and streams.
+
+Argon2id uses 19 MiB memory, two iterations and one lane, with at most two simultaneous verification/hash jobs. A five-hash benchmark on the dev host averaged 183.4 ms per hash; benchmark again when moving hosts. Identity polling does not extend idle expiry. Passwords contain 15–128 characters, support paste and long passphrases, and are never trimmed. There is no public signup or default credential. Initial bootstrap refuses once any administrator exists. Administrators create users, enable/disable users, reset passwords, change roles and revoke sessions from **Accounts**. New and reset passwords require change on the next login; until changed, the session can only inspect its identity, change its password or log out. Disabling or demoting the last enabled administrator is refused. Both administrators and operators control allowlisted devices; administrators additionally manage accounts and device startup/shutdown. Authentication does not widen the device allowlist.
+
+For local account recovery, stop the service first, then run the command as its account/database owner:
+
+```sh
+node dist/serve-avd.js auth-recover \
+  --auth-database /var/lib/serve-avd/auth.sqlite \
+  --auth-origin https://serve-avd-dev.embedez.com
+```
+
+Enter the existing administrator username and a new hidden password. Recovery enables that administrator, clears the forced-change flag and revokes their stored sessions; restart the service afterward so any old process closes its connections. No password option or password environment variable exists. Do not put credentials in shell history, source control or service configuration.
+
+Embedded authenticated configuration:
+
+```ts
+const middleware = emuMiddleware({
+  basePath: "/.emu",
+  auth: { databasePath: "/var/lib/serve-avd/auth.sqlite", origin: "https://example.com" },
+  allowedDevices: ["emulator-5554", "emulator-5556"],
+});
+app.use(middleware);
+server.on("upgrade", (req, socket, head) => middleware.handleUpgrade(req, socket, head));
+// On shutdown: middleware.auth?.close(); closeAllDeviceSessions();
+```
+
+A wrapper overriding `/grid/api` or any other route before calling the middleware must first call `await middleware.auth.handle(req, res)` and return when it returns true. Otherwise it exposes an authentication bypass. Require an auth service at startup, preserve the existing two-TV allowlist and disabled startup policy, bind the hosted process to loopback, and keep Cloudflare Access plus tunnel Access-token validation enabled. Production service configuration is separate from the dev rollout.
+
+The database directory is created with mode 0700 and database file with mode 0600. Ensure any existing parent directory also has restrictive ownership/permissions. Migrations run transactionally at startup; newer unsupported schema versions fail closed. Back up while the service is stopped, copying the database and any `-wal`/`-shm` companions together, or use SQLite's online backup API. Treat backups as account data: restrict access, encrypt off-host copies and retain audit history. Restore to the configured absolute path under the service user's ownership, start the service and verify login. A restored snapshot can restore previously revoked sessions; keep the service offline until all restored sessions have been revoked through the account tools if that snapshot is not current.
+
+Provisioning remains an interactive operator step. Build and tests do not create a hosted administrator. For dev rollout, configure persistent storage and the exact external origin, provision locally, deploy the built files, then verify anonymous denial on localhost and the Access-protected domain, login, forced password change, logout and revocation with the allowlisted devices. Do not remove Access or alter production as part of this rollout.
+
 ## HTTP + WebSocket API
 
 Everything the preview UI does goes through a small same-origin API you can drive yourself:
@@ -371,6 +422,18 @@ await dev.action("network", { speed: "edge" });        // any action by name
 
 `Device` mirrors the action table above (`tap`, `longPress`, `swipe`, `scroll`, `type`, `key`, `button`/`back`/`home`, `rotate`, `find`/`findFirst`/`exists`/`waitFor`, `ax`, `foreground`, `config`, `screenshot`, `eventLog`, `geo`/`followRoute`, `network`, `battery`, `fingerprint`, `call`, `sms`, `fontScale`, `density`, `locale`, `talkback`, `snapshot.*`, `install`, `launch`, `stop`, `clearData`, `uninstall`, `open`, `apps`, `shell`). Failures throw `ServeAvdError` with a `code` (`bad_request | not_found | unsupported | failed | http | network`); `waitFor` throws on timeout. `emu.attach("Pixel_9_Pro_XL")` boots/attaches devices; `emu.grid()` and `emu.eventLog()` mirror the Devices pane and event log.
 
+Authenticated SDK clients use the same user sessions and CSRF checks as the browser. There is no machine-auth bypass. In a same-origin browser, cookies are sent automatically; obtain a fresh token from `<base>/auth/me` and pass it for actions:
+
+```ts
+const identity = await fetch("/.emu/auth/me", { credentials: "same-origin" }).then(r => r.json());
+const emu = await connect(`${location.origin}/.emu`, {
+  headers: { "X-CSRF-Token": identity.csrfToken },
+  credentials: "same-origin",
+});
+```
+
+A Node client must log in using an explicit configured `Origin`, retain the session cookie privately, then supply `Cookie`, `Origin` and `X-CSRF-Token` through `ConnectOptions.headers` (or a custom `fetch` maintaining a cookie jar). The SDK forwards those headers to all requests and refuses server endpoints on another origin. Password changes rotate the cookie and CSRF token, so reconnect with fresh values. Authentication/permission failures expose `ServeAvdError.code === "http"` and `status === 401` or `403`; they never silently fall back to another identity. Local CLI/MCP adb tools remain host-operator tools and do not provide an authenticated remote session; use the SDK's explicit authenticated transport for a protected HTTP server.
+
 ### Claude Code Desktop
 
 Create a `.claude/launch.json` and define a server:
@@ -462,7 +525,7 @@ On shutdown, call `closeAllDeviceSessions()` (exported from `serve-avd/middlewar
 - **Input**: a single persistent `adb shell` per device multiplexes `input motionevent/tap/swipe/keyevent/text` commands, skipping the per-command adb handshake for low latency. Devices without `input motionevent` (pre-Android 11) get gestures replayed as `tap`/`swipe` on release.
 - **Pinch**: synthesized as raw multi-touch `sendevent`s where `/dev/input` is writable (non-Play images after `adb root`); unavailable on Play-store images — the UI tells you.
 
-No native code, no device daemons: the npm package is plain Node + `adb`.
+Device capture uses Node + `adb`, with no device daemon. Account storage and Argon2id hashing use native Node addons; install dependencies on the target platform.
 
 ## Caveats
 
@@ -472,7 +535,7 @@ No native code, no device daemons: the npm package is plain Node + `adb`.
 - Physical devices work for everything except AVD-specific features (boot-by-name, emulator camera flags, and the emulator-console actions: `geo`, `network speed/delay`, `fingerprint`, `call`, `sms`, `snapshot`); enable USB debugging and expect `screenrecord` limits to vary by OEM.
 - `fingerprint` needs a fingerprint enrolled in Settings first; `a11y talkback` needs an image with TalkBack installed (Google APIs / Play); `a11y locale` sets a per-app locale (Android 13+) unless `--system`, which needs a rooted (non-Play) image and otherwise applies on the next boot.
 - `find`/`wait`/`tap --text` depend on `uiautomator dump`, which is unavailable on secure screens (lock screen, payment sheets) and slow on screens that never go idle.
-- The HTTP action endpoint (and therefore the SDK/MCP) can run `shell` and install APKs — it is meant for `localhost`. Put a proxy with auth in front before binding to `0.0.0.0` or tunnelling.
+- The HTTP action endpoint can run `shell` and install APKs. Configure native authentication and a device allowlist before sharing a server. Retain existing Cloudflare Access or other proxy protection during rollout.
 
 ## Development
 
