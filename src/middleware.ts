@@ -80,7 +80,7 @@ export interface EmuMiddlewareOptions {
   basePath?: string;
   /** Private artifact/default metadata directory. */
   workspaceDir?: string;
-  /** Persistent authentication; false explicitly enables unauthenticated local use. */
+  /** Required at startup; false explicitly opts into unsafe unauthenticated use. */
   auth?: AuthOptions | false;
   /** Only these device serials may be attached or accessed. */
   allowedDevices?: string[];
@@ -311,6 +311,8 @@ function parseHelperPath(rel: string): HelperTarget | null {
 export function emuMiddleware(
   options: EmuMiddlewareOptions = {},
 ): EmuMiddleware {
+  if (!options.auth && options.auth !== false)
+    throw new Error("Authentication is required, including on localhost. Configure auth or explicitly set auth: false for unsafe unauthenticated use.");
   const base = normalizeBase(options.basePath);
   const codec = options.codec ?? "auto";
   const workspace = new WorkspaceService(options.workspaceDir);

@@ -123,7 +123,7 @@ interface ServeOpts {
   bitRate?: number;
   size?: string;
   preview: boolean;
-  auth?: AuthOptions;
+  auth?: AuthOptions | false;
 }
 
 async function serve(devices: string[], opts: ServeOpts): Promise<void> {
@@ -181,12 +181,13 @@ async function serve(devices: string[], opts: ServeOpts): Promise<void> {
   }
 }
 
-async function detach(devices: string[], port: number | undefined, quiet: boolean, auth?: AuthOptions): Promise<void> {
+async function detach(devices: string[], port: number | undefined, quiet: boolean, auth: AuthOptions | false): Promise<void> {
   if (auth) new AuthService(auth).close();
   // Re-exec ourselves headless in the background; wait for state files.
   const serials = await resolveTargets(devices, quiet);
   const before = new Map(readAllStates().map((s) => [s.device, s.pid]));
   const args = [process.argv[1]!, ...serials, "--no-preview", "-q"];
+  if (auth === false) args.push("--unsafe-no-auth");
   if (port !== undefined) args.push("-p", String(port));
   if (auth) args.push("--auth-database", auth.databasePath, "--auth-origin", auth.origin,
     ...(auth.absoluteTtlMs ? ["--auth-absolute-ttl", String(auth.absoluteTtlMs)] : []),
@@ -1100,6 +1101,7 @@ program
   .argument("[device...]", "adb serial(s) or AVD name(s) — default: every online device, booting an AVD when none are")
   .option("-p, --port <port>", "Starting port (preview default: 3200; --no-preview default: 3100)", (v) => parseInt(v, 10))
   .option("--host <host>", "Host to bind (default: 127.0.0.1; use 0.0.0.0 for LAN)")
+  .option("--unsafe-no-auth", "Explicitly disable authentication; never expose through a proxy or network")
   .option("--auth-database <path>", "Persistent SQLite account database (or SERVE_AVD_AUTH_DATABASE)")
   .option("--auth-origin <origin>", "Exact external origin (or SERVE_AVD_AUTH_ORIGIN)")
   .option("--auth-absolute-ttl <ms>", "Absolute session lifetime in milliseconds (default 43200000)")
@@ -1496,6 +1498,7 @@ program
   .description("Run an MCP server over stdio exposing the emulator as tools (for Claude Desktop / Cursor / Codex)")
   .option(...deviceOpt)
   .option("--serve", "Also host the preview server in-process (so humans can watch at localhost:3200)")
+  .option("--unsafe-no-auth", "Explicitly disable preview authentication; never expose through a proxy or network")
   .option("-p, --port <port>", "Preview port for --serve (default 3200)", (v) => parseInt(v, 10))
   .option("--auth-database <path>", "Persistent SQLite account database for --serve")
   .option("--auth-origin <origin>", "Exact external origin for --serve")

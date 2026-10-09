@@ -5,7 +5,7 @@ import {
   type HidSocket,
 } from "../src/device-session";
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -353,4 +353,67 @@ test("automatic discovery retains authentication and blocks emulator startup", a
     assert.equal((await h.request("/grid/api/start", { method: "POST", headers, body: JSON.stringify({device:"unconfigured"}) })).status, 403);
     assert.equal((await h.request("/helper/unconfigured/config", { headers })).status, 403);
   } finally { await h.close(); }
+});
+
+
+test("loopback reverse proxy and forged local headers never bypass HTTP or WebSocket authentication", async () => {
+  const h = await fixture("", [], true, true);
+  const forged = {
+    "X-Forwarded-For": "127.0.0.1, 10.0.0.1",
+    "X-Real-IP": "::1",
+    Forwarded: 'for=127.0.0.1;host=localhost;proto=https',
+    "X-Forwarded-Host": "localhost",
+    "X-Forwarded-Proto": "https",
+    "CF-Connecting-IP": "192.168.1.1",
+    "CF-Access-Authenticated-User-Email": "admin@example.test",
+    "X-Original-URL": "/login",
+    "X-Rewrite-URL": "/login",
+  };
+  const proxy = createServer((req, res) => {
+    const upstream = httpRequest(h.url + req.url, { method: req.method, headers: { ...req.headers, ...forged } }, reply => {
+      res.writeHead(reply.statusCode!, reply.headers);
+      reply.pipe(res);
+    });
+    upstream.on("error", () => { res.destroy(); });
+    req.pipe(upstream);
+  });
+  await new Promise<void>(resolve => proxy.listen(0, "127.0.0.1", resolve));
+  const proxyUrl = `http://127.0.0.1:${(proxy.address() as { port: number }).port}`;
+  try {
+    for (const url of [h.url, proxyUrl]) {
+      for (const path of ["/api", "/grid/api", "/api/event-log/events", "/helper/unknown/screenshot.png", "/helper/unknown/stream.avcc", "/helper/unknown/action", "/grid/api/start", "/auth/users", "/future-api"]) {
+        for (const method of ["GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS"]) {
+          const response = await fetch(url + path, { method, headers: { ...forged, Origin: h.origin }, redirect: "manual" });
+          assert.equal(response.status, 401, `${url} ${method} ${path}`);
+          await response.arrayBuffer();
+        }
+      }
+    }
+    const session = await h.login();
+    for (const headers of [forged, { ...forged, Cookie: session.cookie }]) {
+      // A valid session still cannot use a forged forwarded origin for mutations.
+      const response = await h.request("/grid/api/start", {
+        method: "POST", headers: { ...headers, "X-CSRF-Token": session.csrfToken }, body: "{}",
+      });
+      assert.equal(response.status, "Cookie" in headers ? 403 : 401);
+    }
+    for (const headers of [
+      { ...forged, Origin: h.origin },
+      { ...forged, Cookie: session.cookie },
+      { ...forged, Cookie: session.cookie, Origin: "https://evil.example" },
+    ]) {
+      const status = await new Promise<number>((resolve, reject) => {
+        const ws = new WebSocket(h.url.replace("http:", "ws:") + "/helper/unknown/ws", { headers, handshakeTimeout: 2000 });
+        ws.once("unexpected-response", (_req, res) => { resolve(res.statusCode!); res.resume(); ws.terminate(); });
+        ws.on("error", reject);
+        ws.once("open", () => { ws.terminate(); reject(new Error("Unauthorized upgrade succeeded")); });
+      });
+      assert.equal(status, 401);
+    }
+    assert.deepEqual(h.middleware.attachedSerials(), []);
+  } finally {
+    proxy.closeAllConnections();
+    await new Promise<void>(resolve => proxy.close(() => resolve()));
+    await h.close();
+  }
 });

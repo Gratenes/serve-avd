@@ -4,10 +4,7 @@ The `npx serve` of Android Emulators.
 
 Host your emulator for use with Agent tools like Codex, Cursor, or Claude Desktop — locally, over your LAN, or host on a remote machine and tunnel anywhere.
 
-```sh
-npx serve-avd
-# → Preview at http://localhost:3200
-```
+Start with [installation and first login](#install). Authentication is required for every preview server, including localhost; there is no implicit local-network trust.
 
 https://github.com/user-attachments/assets/91ca0811-119e-46f6-8e3e-9b41bd9f9bd7
 
@@ -60,6 +57,43 @@ It's also a great way to hand an emulator to an AI agent: everything is driveabl
 Requires the Android SDK platform-tools (`adb`; the `emulator` binary is needed to boot AVDs by name) and a [maintained Node.js LTS release](https://nodejs.org/en/about/previous-releases) (Node 22+; the persistent SQLite driver uses a native addon). serve-avd finds your SDK via `$ANDROID_HOME`, `$ANDROID_SDK_ROOT`, or the default SDK locations on macOS and Linux.
 
 The H.264 stream needs `screenrecord --output-format=h264` (present on every emulator image from the last decade). If it's unavailable, serve-avd automatically falls back to an MJPEG screenshot stream.
+
+### Install this fork
+
+Build from this repository to use its authentication and workspace changes. The unscoped `npx serve-avd` command resolves the upstream npm package, which may differ from this fork.
+
+```sh
+git clone https://github.com/Gratenes/serve-avd.git
+cd serve-avd
+npm ci
+npm run build
+npm link
+```
+
+`npm link` makes this checkout's `serve-avd` command available in your active Node environment. Keep the checkout in place. To update it, pull the latest changes and rerun `npm ci` and `npm run build`.
+
+### Configure authentication and sign in
+
+Run these commands as the user who will run the server. Keep the database outside the checkout:
+
+```sh
+mkdir -p "$HOME/.local/share/serve-avd/auth"
+chmod 700 "$HOME/.local/share/serve-avd/auth"
+export SERVE_AVD_AUTH_DATABASE="$HOME/.local/share/serve-avd/auth/accounts.sqlite"
+export SERVE_AVD_AUTH_ORIGIN="http://localhost:3200"
+
+# First installation only: choose an administrator username and password.
+serve-avd auth-bootstrap
+
+# List connected devices, then start a preview for the desired serial.
+adb devices -l
+serve-avd emulator-5554 --host 127.0.0.1 --port 3200
+```
+
+Open **http://localhost:3200** and sign in. Bootstrap prompts for a hidden 15–128-character password; there is no default account or public signup. Administrators manage accounts from **Accounts**. Export the same database/origin settings in each new shell, or configure them in your service manager; accounts persist across restarts.
+
+For public hosting, set `SERVE_AVD_AUTH_ORIGIN` to your exact external HTTPS origin before starting the server, terminate TLS at your reverse proxy, and forward HTTP and WebSocket upgrades to the loopback listener. Authentication remains mandatory behind the proxy. See [Authentication and operation](#authentication-and-operation) for permissions, sessions, recovery and backup.
+
 
 ## CLI
 
@@ -128,6 +162,11 @@ serve-avd shell [cmd…] | push <local> <remote> | pull <remote> [local]
 Options:
   -p, --port <port>   Starting port (preview default: 3200; --no-preview default: 3100)
       --host <host>   Host to bind (default: 127.0.0.1; use 0.0.0.0 for LAN)
+      --auth-database <path>  Absolute path to the persistent account database
+      --auth-origin <origin>  Exact browser-facing origin (HTTPS for public hosting)
+      --auth-absolute-ttl <ms>  Maximum session lifetime (default: 43200000)
+      --auth-idle-ttl <ms>  Idle session lifetime (default: 3600000)
+      --unsafe-no-auth  Explicit unauthenticated mode; never proxy or expose it
   -d, --detach        Spawn a background server and exit (daemon mode)
   -q, --quiet         JSON-only output
       --no-preview    Skip the web UI; stream in foreground only
@@ -146,6 +185,8 @@ Options:
 ```
 
 ### Examples
+
+Server examples assume the authentication environment variables from [installation](#install) are set and an administrator has been provisioned.
 
 ```sh
 serve-avd                              # attach every online device, open preview
@@ -247,7 +288,9 @@ Inside the virtual scene, custom posters can be placed via the emulator's extend
 
 ## Authentication and operation
 
-The library retains local unauthenticated compatibility: `emuMiddleware({ auth: false })` explicitly selects it, and omitted `auth` has the same behavior. Use this only for a trusted local development server. The standalone CLI enables authentication when configured through flags or environment variables. Supplying only part of the configuration fails startup before devices are resolved or launched; invalid or unavailable account storage fails startup too. A hosted wrapper must require both values itself and pass `auth` explicitly.
+Authentication is required by default, including on loopback and private networks: a reverse proxy can expose either. Missing or partial configuration fails startup before devices are resolved or launched; invalid or unavailable account storage fails startup too. Configure the standalone CLI through flags or environment variables, and pass `auth` explicitly to embedded middleware. This is a breaking change for callers that previously omitted authentication.
+
+For intentionally unauthenticated development only, explicitly use `--unsafe-no-auth` (also supported by `mcp --serve` and `--detach`) or `emuMiddleware({ auth: false })`. This mode grants every caller device access; never proxy, tunnel, or expose it to a network. The CLI rejects combining this opt-out with any auth configuration. Local addresses and forwarded headers never grant authentication privileges.
 
 ```sh
 # Keep account data outside the checkout, in a directory owned by the service user.
@@ -255,10 +298,10 @@ export SERVE_AVD_AUTH_DATABASE=/var/lib/serve-avd/auth.sqlite
 export SERVE_AVD_AUTH_ORIGIN=https://example.com
 
 # Run locally as the service user, in an interactive terminal.
-node dist/serve-avd.js auth-bootstrap
+serve-avd auth-bootstrap
 # Prompts for username, then a hidden password and confirmation.
 
-node dist/serve-avd.js emulator-5554 --host 127.0.0.1 --port 3201
+serve-avd emulator-5554 --host 127.0.0.1 --port 3201
 ```
 
 Equivalent flags are `--auth-database <absolute-path>` and `--auth-origin <origin>`. The origin is the exact browser-facing HTTP(S) origin, including a nondefault port, with no path or trailing slash. Use `http://localhost:3200` for local testing; HTTPS origins set Secure cookies even when the service itself listens on HTTP behind a proxy. Arbitrary forwarded headers are never trusted to infer origin or client address. HTTPS session cookies will not authenticate a browser opening the plain HTTP localhost URL; test direct-origin authorization with explicit HTTP requests instead.
@@ -270,7 +313,7 @@ Argon2id uses 19 MiB memory, two iterations and one lane, with at most two simul
 For local account recovery, stop the service first, then run the command as its account/database owner:
 
 ```sh
-node dist/serve-avd.js auth-recover \
+serve-avd auth-recover \
   --auth-database /var/lib/serve-avd/auth.sqlite \
   --auth-origin https://example.com
 ```
@@ -373,7 +416,21 @@ The server pushes `0x82` + JSON screen config whenever dimensions or orientation
 
 ## Connectors
 
+### Agent skill
+
+The [serve-avd skill](skills/serve-avd/SKILL.md) teaches agents how to select devices, inspect and interact with Android UI, verify results, use authenticated remote servers, and replay flows. It uses the portable `SKILL.md` format supported by the [skills CLI](https://github.com/vercel-labs/skills).
+
+Install from the public GitHub repository:
+
+```sh
+npx skills add Gratenes/serve-avd --skill serve-avd
+```
+
+Add `--global` to install for your user across projects. The skill provides operating instructions; install this fork and configure its MCP connection below or make its CLI available to give the agent device access. Installing the skill does not install the server or create an account.
+
 ### MCP (Claude Desktop, Claude Code, Cursor, Codex, …)
+
+For this fork, use the linked `serve-avd` executable from [installation](#install) as your MCP command with args `["mcp"]`. Adding `--serve` starts a preview and requires the auth database/origin environment variables in the MCP process plus a provisioned account. Headless stdio MCP uses local host access and does not require a web session.
 
 `serve-avd mcp` is a Model Context Protocol server over stdio. It exposes the emulator as tools — `screenshot`, `ui_tree`, `find`, `wait_for`, `tap`, `swipe`, `type_text`, `press_button`, `press_key`, `foreground`, `event_log`, `open_url`, `launch_app`, `install_apk`, `list_apps`, `rotate`, `set_location`, `snapshot`, `list_devices`, and a generic `device_action` for everything else (network, battery, fingerprint, call, sms, locale, …). No extra dependencies; nothing else needs to be running (it drives adb directly, or a running serve-avd when there is one).
 
@@ -381,14 +438,14 @@ The server pushes `0x82` + JSON screen config whenever dimensions or orientation
 {
   "mcpServers": {
     "android": {
-      "command": "npx",
-      "args": ["-y", "serve-avd", "mcp", "--serve"]
+      "command": "serve-avd",
+      "args": ["mcp"]
     }
   }
 }
 ```
 
-That's the whole config for Claude Desktop (`claude_desktop_config.json`), Cursor (`.cursor/mcp.json`) and Codex; for Claude Code: `claude mcp add android -- npx -y serve-avd mcp --serve`.
+That's the whole config for Claude Desktop (`claude_desktop_config.json`), Cursor (`.cursor/mcp.json`) and Codex; for Claude Code: `claude mcp add android -- serve-avd mcp`.
 
 - `--serve` also hosts the preview UI in the same process (default port 3200), so a human can watch the agent work at `http://localhost:3200`. Omit it to run headless.
 - `-d <serial|AVD>` pins every tool call to one device; otherwise tools take an optional `device` and default to the only/first one.
@@ -474,7 +531,10 @@ config.server.enhanceMiddleware = (metroMiddleware, server) => {
     ? originalEnhanceMiddleware(metroMiddleware, server)
     : metroMiddleware;
   const app = connect();
-  app.use(emuMiddleware({ basePath: "/.emu" }));
+  app.use(emuMiddleware({
+    basePath: "/.emu",
+    auth: { databasePath: process.env.SERVE_AVD_AUTH_DATABASE, origin: process.env.SERVE_AVD_AUTH_ORIGIN },
+  }));
   app.use(middleware);
   return app;
 };
@@ -489,7 +549,13 @@ module.exports = config;
 ```ts
 import { emuMiddleware } from "serve-avd/middleware";
 
-const middleware = emuMiddleware({ basePath: "/.emu" });
+const middleware = emuMiddleware({
+  basePath: "/.emu",
+  auth: {
+    databasePath: "/var/lib/serve-avd/auth.sqlite",
+    origin: "https://example.com",
+  },
+});
 app.use(middleware);
 // → preview HTML at /.emu
 // → state JSON  at /.emu/api
@@ -498,7 +564,7 @@ const server = app.listen(3000);
 server.on("upgrade", (req, socket, head) => middleware.handleUpgrade(req, socket, head));
 ```
 
-Device sessions are created in-process and everything (video, input socket, logs) is same-origin behind your one port, so remote proxying/tunnelling needs no extra configuration — just forward the `upgrade` event as above so input and live streams work. When terminating TLS at a reverse proxy, the page uses `wss:` automatically based on the page origin.
+Device sessions are created in-process and everything (video, input socket, logs) is same-origin behind your one port, so remote proxying/tunnelling uses the configured external authentication origin. Forward the `upgrade` event as above so input and live streams work. When terminating TLS at a reverse proxy, the page uses `wss:` automatically based on the page origin.
 
 On shutdown, call `closeAllDeviceSessions()` (exported from `serve-avd/middleware`) to stop the adb capture processes.
 

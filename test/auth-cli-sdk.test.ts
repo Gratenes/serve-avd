@@ -2,7 +2,29 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { configuredAuth } from "../src/auth-cli";
 import { createMcpServer } from "../src/mcp";
+import { emuMiddleware } from "../src/middleware";
+import { startServer } from "../src/server";
 import { connect, ServeAvdError, type ServerInfo } from "../src/sdk";
+
+test("missing authentication fails closed even on loopback; opt-out must be explicit", async () => {
+  const names = ["SERVE_AVD_AUTH_DATABASE", "SERVE_AVD_AUTH_ORIGIN", "SERVE_AVD_AUTH_ABSOLUTE_TTL_MS", "SERVE_AVD_AUTH_IDLE_TTL_MS"];
+  const saved = names.map(name => process.env[name]);
+  for (const name of names) delete process.env[name];
+  try {
+    assert.throws(() => configuredAuth(), /Authentication is required/);
+    assert.throws(() => emuMiddleware(), /Authentication is required/);
+    assert.throws(() => emuMiddleware({ auth: null as never }), /Authentication is required/);
+    await assert.rejects(startServer({ port: 0, host: "127.0.0.1" }), /Authentication is required/);
+    let resolved = false;
+    await assert.rejects(createMcpServer({ serve: true, version: "test", resolveDevices: async () => { resolved = true; return []; } }), /Authentication is required/);
+    assert.equal(resolved, false);
+    assert.equal(configuredAuth({ unsafeNoAuth: true }), false);
+    assert.throws(() => configuredAuth({ unsafeNoAuth: true, authOrigin: "https://example.test" }), /Cannot combine/);
+    assert.equal(emuMiddleware({ auth: false }).auth, undefined);
+  } finally {
+    names.forEach((name, i) => { if (saved[i] === undefined) delete process.env[name]; else process.env[name] = saved[i]; });
+  }
+});
 
 test("auth CLI rejects partial configuration and invalid session lifetimes", () => {
   assert.throws(() => configuredAuth({ authDatabase: "", authOrigin: "https://test.example" }), /requires both/);

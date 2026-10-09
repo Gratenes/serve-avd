@@ -3,6 +3,7 @@ import { Writable } from "node:stream";
 import { AuthService, type AuthOptions } from "./auth";
 
 export interface AuthCliOptions {
+  unsafeNoAuth?: boolean;
   authDatabase?: string;
   authOrigin?: string;
   authAbsoluteTtl?: string;
@@ -10,12 +11,17 @@ export interface AuthCliOptions {
 }
 
 /** Partial configuration is an error, including for the local CLI. */
-export function configuredAuth(options: AuthCliOptions = {}): AuthOptions | undefined {
+export function configuredAuth(options: AuthCliOptions = {}): AuthOptions | false {
   const databasePath = options.authDatabase ?? process.env.SERVE_AVD_AUTH_DATABASE;
   const origin = options.authOrigin ?? process.env.SERVE_AVD_AUTH_ORIGIN;
   const absolute = options.authAbsoluteTtl ?? process.env.SERVE_AVD_AUTH_ABSOLUTE_TTL_MS;
   const idle = options.authIdleTtl ?? process.env.SERVE_AVD_AUTH_IDLE_TTL_MS;
-  if (databasePath === undefined && origin === undefined && absolute === undefined && idle === undefined) return undefined;
+  const configured = [databasePath, origin, absolute, idle].some(value => value !== undefined);
+  if (options.unsafeNoAuth === true) {
+    if (configured) throw new Error("Cannot combine --unsafe-no-auth with authentication configuration");
+    return false;
+  }
+  if (!configured) throw new Error("Authentication is required, including on localhost. Configure --auth-database and --auth-origin, or explicitly opt out with --unsafe-no-auth (never expose this mode through a proxy or network).");
   if (!databasePath || !origin) throw new Error("Authentication requires both --auth-database / SERVE_AVD_AUTH_DATABASE and --auth-origin / SERVE_AVD_AUTH_ORIGIN");
   const ttl = (value: string | undefined, name: string): number | undefined => {
     if (value === undefined) return undefined;
