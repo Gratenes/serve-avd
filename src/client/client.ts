@@ -9,6 +9,8 @@ import { WorkspaceRemote } from "./remote-controls";
 import { WorkspaceCanvas, type CanvasLayout } from "./workspace-canvas";
 import { workspaceIcons } from "./workspace-icons";
 import { WorkspaceLogcat, createLogcatState } from "./logcat";
+import { WorkspaceApps } from "./apps";
+import { WorkspaceAutomate } from "./automate";
 
 declare const __SERVE_AVD_VERSION__: string | undefined;
 
@@ -508,6 +510,8 @@ class DeviceView {
     return `${this.statusChip.textContent} · ${this.fpsChip.textContent}`;
   }
 
+  sendInput(tag: number, body: Record<string, unknown>): boolean { return this.send(tag, body); }
+
   sendButton(name: string): void {
     this.send(0x04, { button: name });
   }
@@ -569,16 +573,19 @@ class DeviceView {
     ws.onerror = () => ws.close();
   }
 
-  send(tag: number, body?: unknown): void {
+  send(tag: number, body?: unknown): boolean {
     const json = body === undefined ? new Uint8Array(0) : new TextEncoder().encode(JSON.stringify(body));
     const frame = new Uint8Array(1 + json.length);
     frame[0] = tag;
     frame.set(json, 1);
-    if (this.closed || this.suspended || authExpired) return;
+    if (this.closed || this.suspended || authExpired) return false;
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(frame);
+      if (body && [3, 4, 5, 6, 11, 13].includes(tag)) this.root.dispatchEvent(new CustomEvent("deviceinput", { detail: { tag, body } }));
+      return true;
     } else {
       this.showNotice("Device disconnected. Try again when connected.", false);
+      return false;
     }
   }
 
@@ -1127,12 +1134,14 @@ class Panes {
     private readonly deviceViews: () => DeviceView[],
     private readonly attachDevice: (name: string) => Promise<void>,
     private readonly selectedDevice: () => string | null,
+    private readonly apps: WorkspaceApps,
+    private readonly automate: WorkspaceAutomate,
   ) {
     this.body = el("div", { class: "pane-body" });
     this.identity = el("div", { class: "inspector-identity" });
     const tabBar = el("div", { class: "pane-tabs", "aria-label": "Inspector sections" });
-    for (const name of ["devices", "tools", "logs"]) {
-      const tab = el("button", { class: "pane-tab", type: "button", text: name === "tools" ? "Controls" : name === "logs" ? "Logcat" : "Devices", "data-pane": name, "aria-pressed": "false" });
+    for (const name of ["devices", "tools", "apps", "automate", "logs"]) {
+      const tab = el("button", { class: "pane-tab", type: "button", text: name === "tools" ? "Controls" : name === "logs" ? "Logcat" : name === "apps" ? "Apps" : name === "automate" ? "Automate" : "Devices", "data-pane": name, "aria-pressed": "false" });
       if (name === "logs") tab.append(this.logcatBadge);
       tab.addEventListener("click", () => this.open(name));
       this.tabs.set(name, tab);
@@ -1159,6 +1168,8 @@ class Panes {
   }
 
   open(name: string): void {
+    if (name === "auto") name = "automate";
+    if (name === "controls") name = "tools";
     this.active = name;
     this.renderGeneration++;
     const target = this.targetView();
@@ -1176,10 +1187,13 @@ class Panes {
     if (name === "devices") void this.renderDevices();
     if (name === "tools") this.renderTools();
     if (name === "logs") this.renderLogs();
+    if (name === "apps") { this.apps.select(target); this.body.replaceChildren(this.apps.root); }
+    if (name === "automate") { this.automate.select(target); this.body.replaceChildren(this.automate.root); }
     this.root.dispatchEvent(new CustomEvent("inspectorchange", { bubbles: true }));
   }
 
   refreshTarget(): void {
+    this.automate.select(this.targetView());
     if (this.active) this.open(this.active);
   }
 
@@ -1696,6 +1710,11 @@ async function main(): Promise<void> {
     const index = shown.findIndex(v => v.entry.device === activeDeviceId);
     if (shown.length) selectDevice(shown[(index + 1) % shown.length]!.entry.device);
   });
+  const apps = new WorkspaceApps(visibleViews, () => ({ csrfToken, expired: authExpired }), expireAuthentication);
+  const automate = new WorkspaceAutomate(`serve-avd:features:${BOOT.basePath}:${account?.id ?? "local"}`, visibleViews,
+    (active, steps) => remote.setMacroRecording(active, steps));
+  remote.setMacroActions(() => { automate.select(views.find(view => view.entry.device === activeDeviceId) ?? null); automate.toggleRecording(); }, () => panes?.open("automate"));
+  window.addEventListener("auth-expired", () => { apps.destroy(); automate.destroy(); remote.destroy(); });
   stageHost.append(remote.root);
   const railToggle = workspaceButton("rail", "Toggle device list", () => {
     showRail = !showRail;
@@ -1747,6 +1766,7 @@ async function main(): Promise<void> {
   window.addEventListener("auth-expired", () => canvas.destroy());
 
   const updateRemote = () => {
+    automate.checkTargets();
     const selected = views.find(v => v.entry.device === activeDeviceId);
     const targets = mirror ? visibleViews() : visibleViews().filter(v => v === selected);
     remote.setTarget(mirror ? "All visible devices" : selected?.entry.name ?? "No device selected", targets.some(v => v.connected));
@@ -1802,6 +1822,7 @@ async function main(): Promise<void> {
     canvas.sync(views.map(v => ({ id: v.entry.device, root: v.root })), !mobile.matches, layout, activeDeviceId);
     remote.setVisible(showRemote);
     updateRemote();
+    automate.checkTargets();
   }
   function selectDevice(id: string, focusInput = true): void {
     if (!views.some(v => v.entry.device === id)) return;
@@ -1836,6 +1857,11 @@ async function main(): Promise<void> {
     const view = new DeviceView(entry, api.codec === "mjpeg");
     views.push(view);
     stage.append(view.root);
+    apps.mountDevice(view);
+    view.root.addEventListener("deviceinput", event => {
+      const { tag, body } = (event as CustomEvent<{tag:number;body:Record<string, unknown>}>).detail;
+      automate.observeInput(entry.device, tag, body);
+    });
     selector.append(el("option", { value: entry.device, text: entry.name }));
     const select = el("button", { class: "rail-select", type: "button", "aria-label": `Select ${entry.name}` },
       el("span", { class: "rail-name" }, el("span", { class: "status-dot" }), el("strong", { text: entry.name })));
@@ -1913,6 +1939,7 @@ async function main(): Promise<void> {
       for (let i = views.length - 1; i >= 0; i--) {
         const view = views[i]!;
         if (data.devices.some(d => d.serial === view.entry.device && d.state === "device")) continue;
+        apps.removeDevice(view.entry.device);
         view.destroy();
         view.root.remove();
         railNodes.get(view.entry.device)?.row.remove();
@@ -1950,7 +1977,8 @@ async function main(): Promise<void> {
     }
     available.append(button("Refresh devices", "Refresh devices", () => void refreshAvailable(), "ghost refresh-devices"));
   }
-  panes = new Panes(api, () => views, attachDevice, () => activeDeviceId);
+  panes = new Panes(api, () => views, attachDevice, () => activeDeviceId, apps, automate);
+  automate.select(views.find(view => view.entry.device === activeDeviceId) ?? null);
   panes.root.addEventListener("inspectorchange", () => {
     if (mobile.matches && panes?.visible) showRail = false;
     update();

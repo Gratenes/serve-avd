@@ -1,0 +1,213 @@
+.workspace-apps,
+.workspace-automate {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  font-size: 12px;
+  min-width: 0;
+}
+.feature-section {
+  background: #141619;
+  border: 1px solid #262a2f;
+  border-radius: 10px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.feature-section h3 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+}
+.feature-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.feature-row > .input,
+.feature-row > .select {
+  flex: 1;
+  width: 0;
+  min-width: 70px;
+}
+.feature-card {
+  background: #17191c;
+  border: 1px solid #262a2f;
+  border-radius: 8px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.feature-card strong,
+.feature-build {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.feature-meta {
+  display: block;
+  color: #7c838b;
+  font:
+    11px "IBM Plex Mono",
+    monospace;
+  overflow-wrap: anywhere;
+}
+.feature-status {
+  margin: 0;
+  color: #6ee7b7;
+  overflow-wrap: anywhere;
+}
+.feature-status:empty {
+  display: none;
+}
+.feature-status.error,
+.install-progress.error {
+  color: #f2777a;
+}
+.apk-browse {
+  border-style: dashed;
+  min-height: 60px;
+  width: 100%;
+}
+.installed-version {
+  font:
+    10px "IBM Plex Mono",
+    monospace;
+  background: #1e2a3a;
+  color: #9cc8ff;
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.apk-drop-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(6, 40, 28, 0.9);
+  border: 2px dashed #6ee7b7;
+  display: grid;
+  place-content: center;
+  z-index: 8;
+  color: #a7f3d0;
+  text-align: center;
+  white-space: pre-line;
+  pointer-events: none;
+}
+.install-progress {
+  position: absolute;
+  inset: auto 8px 8px 8px;
+  padding: 8px;
+  background: #121417ed;
+  border: 1px solid #2f5a47;
+  border-radius: 8px;
+  z-index: 9;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+.install-progress span:first-child {
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+.install-progress progress {
+  width: 80px;
+  accent-color: #6ee7b7;
+}
+.device-frame {
+  position: relative;
+}
+.macro-steps {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.macro-step {
+  background: #17191c;
+  border: 1px solid #262a2f;
+  padding: 8px;
+  border-radius: 7px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.macro-step > .input {
+  width: 100%;
+  box-sizing: border-box;
+}
+.macro-step .select {
+  font-size: 10px;
+}
+.macro-recording {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.snapshot-confirm {
+  padding: 10px;
+  background: #2a2310;
+  border: 1px solid #5a4520;
+  border-radius: 8px;
+}
+.snapshot-confirm p {
+  margin: 0 0 8px;
+  color: #f8d58a;
+}
+.workspace-remote-macros {
+  display: flex;
+  gap: 6px;
+  border-top: 1px solid #262a2f;
+  padding-top: 8px;
+}
+.workspace-remote-macros button {
+  flex: 1;
+  font-size: 11px;
+}
+.workspace-remote-macros .is-recording {
+  color: #f2777a;
+  border-color: #5a2e31;
+}
+.feature-section details summary {
+  cursor: pointer;
+}
+.workspace-apps [hidden],
+.workspace-automate [hidden],
+.apk-drop-overlay[hidden],
+.install-progress[hidden],
+.installed-version[hidden] {
+  display: none;
+}
+.pane-tabs .pane-tab {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+}
+.feature-section label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.feature-section input[type="checkbox"] {
+  accent-color: #6ee7b7;
+}
+@media (max-width: 700px) {
+  .installed-version {
+    max-width: 100px;
+  }
+  .workspace-remote-macros {
+    grid-column: 1/-1;
+  }
+  .workspace-automate,
+  .workspace-apps {
+    padding: 8px;
+  }
+}

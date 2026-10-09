@@ -98,6 +98,8 @@ export class WorkspaceRemote {
   private readonly panel = document.createElement("div");
   private readonly grip = document.createElement("button");
   private readonly collapse = document.createElement("button");
+  private readonly macroRecord = document.createElement("button");
+  private readonly macroRun = document.createElement("button");
   private readonly resizeObserver: ResizeObserver;
   private observedHost: HTMLElement | null = null;
   private readonly mobile = window.matchMedia("(max-width: 700px), (pointer: coarse) and (max-height: 500px)");
@@ -169,7 +171,17 @@ export class WorkspaceRemote {
     const hint = document.createElement("p");
     hint.className = "workspace-remote-hint";
     hint.textContent = "Arrows · Enter · Esc work while the remote has focus";
-    this.panel.append(dpad, navigation, bottom, hint);
+    const macros = document.createElement("div");
+    macros.className = "workspace-remote-macros";
+    this.macroRecord.type = this.macroRun.type = "button";
+    this.macroRecord.className = this.macroRun.className = "btn small";
+    this.macroRecord.textContent = "● Record macro";
+    this.macroRecord.setAttribute("aria-label", "Record macro");
+    this.macroRecord.setAttribute("aria-pressed", "false");
+    this.macroRun.textContent = "Run macro…";
+    this.macroRun.setAttribute("aria-label", "Run macro");
+    macros.append(this.macroRecord, this.macroRun);
+    this.panel.append(dpad, navigation, bottom, macros, hint);
     this.root.append(header, this.panel);
     this.panel.addEventListener("keydown", (event) => {
       const onButton = event.target instanceof HTMLButtonElement;
@@ -198,6 +210,18 @@ export class WorkspaceRemote {
     window.addEventListener("resize", this.onLayoutChange);
     this.updateExpanded();
     this.setTarget("No device selected", false);
+  }
+
+  setMacroActions(record: () => void, run: () => void): void {
+    this.macroRecord.addEventListener("click", () => { if (!this.destroyed) record(); });
+    this.macroRun.addEventListener("click", () => { if (!this.destroyed) run(); });
+  }
+
+  setMacroRecording(active: boolean, steps: number): void {
+    this.macroRecord.textContent = active ? `Stop · ${steps} steps` : "● Record macro";
+    this.macroRecord.setAttribute("aria-label", active ? "Stop and save macro" : "Record macro");
+    this.macroRecord.setAttribute("aria-pressed", String(active));
+    this.macroRecord.classList.toggle("is-recording", active);
   }
 
   setTarget(name: string, connected: boolean): void {
