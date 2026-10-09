@@ -84,3 +84,19 @@
 @media (max-width: 700px), (pointer: coarse) and (max-height: 500px) {
   .inspector .control-field .tool-input { min-height: 44px; }
 }
+/* Compact controls retain known device state and expose pending writes. */
+.inspector-group-summary { margin-left: auto; min-width: 0; max-width: 58%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #7c838b; font: 10px ui-monospace, monospace; font-weight: 400; }
+.inspector-group[open] > summary .inspector-group-summary { display: none; }
+.inspector-segmented { display: flex; align-items: stretch; width: 100%; padding: 3px; gap: 2px; background: #1b1e22; border: 1px solid #2c3036; border-radius: 8px; }
+.inspector .inspector-segmented .btn { flex: 1; min-width: 0; min-height: 26px; padding: 3px 4px; border: 0; border-radius: 5px; color: #a3a9b0; background: transparent; font-size: 11px; }
+.inspector .inspector-segmented .btn[aria-pressed="true"] { color: #f1f3f4; background: #2e3339; box-shadow: inset 0 0 0 1px #3a4048; }
+.inspector .btn:disabled, .inspector input:disabled { opacity: .55; cursor: wait; }
+.inspector-location-presets { display: flex; flex-wrap: wrap; gap: 6px; }
+.inspector .inspector-battery-value { margin-left: auto; color: #eceef0; font: 12px ui-monospace, monospace; }
+.inspector-control-caption { color: #a3a9b0; font-size: 11px; }
+.inspector .tool-input[type="range"] { flex: 1; width: 100%; min-width: 0; height: 24px; border: 0; background: transparent; accent-color: #6ee7b7; padding: 0; }
+.inspector .control-field > .tool-form-row { display: flex; }
+.inspector .tool-form-row .input { min-width: 0; }
+@media (max-width: 700px), (pointer: coarse) and (max-height: 500px) {
+  .inspector .inspector-segmented .btn { min-height: 44px; }
+}

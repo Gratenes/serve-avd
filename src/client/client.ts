@@ -1108,6 +1108,8 @@ class Panes {
   private readonly identity: HTMLElement;
   private readonly groupState = new Map<string, boolean>();
   private controlsFilter = "";
+  private readonly controlState = new Map<string, Record<string, unknown>>();
+  private readonly controlQueues = new Map<string, Promise<unknown>>();
   private renderGeneration = 0;
   private readonly tabs = new Map<string, HTMLButtonElement>();
   private active: string | null = null;
@@ -1254,33 +1256,6 @@ class Panes {
       return;
     }
 
-    const actions = el("div", { class: "tool-grid" });
-    const actionIcon = (paths: string) => `<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
-    const act = (label: string, icon: string, fn: (view: DeviceView) => void) => {
-      const action = button(`${icon}<span>${label}</span>`, label, () => fn(target));
-      action.classList.add("inspector-quick-action");
-      actions.append(action);
-    };
-    act("Memory warning", actionIcon('<rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4m6-4v4M9 18v4m6-4v4M2 9h4m-4 6h4m12-6h4m-4 6h4"/>'), (v) => v.send(0x09));
-    act("Notifications", actionIcon('<path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/>'), (v) => v.sendButton("notifications"));
-    act("Quick settings", actionIcon('<path d="M4 7h16M4 17h16"/><circle cx="8" cy="7" r="3"/><circle cx="16" cy="17" r="3"/>'), (v) => v.sendButton("quick-settings"));
-    act("Lock", actionIcon('<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/>'), (v) => v.sendButton("lock"));
-    act("Wake", icons.power, (v) => v.sendButton("wake"));
-    act("Screenshot", icons.camera, (v) => window.open(v.entry.screenshotEndpoint, "_blank"));
-    wrap.append(el("h3", { text: "Quick actions" }), actions);
-
-    const flags = el("div", { class: "flag-list" });
-    for (const flag of DEBUG_FLAGS) {
-      const checkbox = el("input", { type: "checkbox" }) as HTMLInputElement;
-      checkbox.indeterminate = true;
-      checkbox.title = "Current state unavailable. Click to set.";
-      checkbox.addEventListener("change", () => {
-        target?.send(0x08, { option: flag, enabled: checkbox.checked });
-      });
-      flags.append(el("label", { class: "flag" }, checkbox, ` ${flag}`));
-    }
-    wrap.append(el("h3", { text: "Render debugging" }), flags);
-
     this.renderEmulatorControls(wrap, () => target);
 
     const log = el("div", { class: "event-log" });
@@ -1310,14 +1285,14 @@ class Panes {
     const search = el("input", { class: "input inspector-search", type: "search", placeholder: "Find a control — battery, gps, wifi…", "aria-label": "Find a control" });
     search.value = this.controlsFilter;
     const groups = el("div", { class: "inspector-groups" });
-    const aliases: Record<string, string> = { Location: "gps latitude longitude", Network: "wifi airplane connectivity mobile data latency", Apps: "package deep link launch stop clear" };
+    const aliases: Record<string, string> = { Location: "gps latitude longitude", Network: "wifi airplane connectivity mobile data latency speed delay", Apps: "app package deep link launch stop clear", Battery: "battery power charging ac", Accessibility: "accessibility font contrast talkback", "Render debugging": "overdraw gpu layout bounds taps pointer animations debug" };
     let current: HTMLDetailsElement | null = null;
     for (const child of Array.from(wrap.children)) {
       if (child.tagName === "H3") {
         const title = child.textContent ?? "Controls";
         current = el("details", { class: "inspector-group", "data-group": title });
-        current.open = this.groupState.get(title) ?? (title === "Quick actions" || title === "Network");
-        current.append(el("summary", {}, el("span", { text: title })));
+        current.open = this.groupState.get(title) ?? (title === "Quick actions" || title === "Network" || title === "Apps");
+        current.append(el("summary", {}, el("span", { text: title }), el("span", { class: "inspector-group-summary" })));
         const group = current;
         group.addEventListener("toggle", () => { if (!search.value) this.groupState.set(title, group.open); });
         groups.append(group);
@@ -1327,6 +1302,15 @@ class Panes {
         content.append(child);
       }
     }
+    const updateSummaries = () => {
+      for (const group of Array.from(groups.children) as HTMLDetailsElement[]) {
+        const value = group.querySelector<HTMLElement>("[data-summary]")?.dataset.summary ?? "";
+        const label = group.querySelector<HTMLElement>(".inspector-group-summary");
+        if (label) { label.textContent = value; label.title = value; }
+      }
+    };
+    groups.addEventListener("inspector-summary", updateSummaries);
+    updateSummaries();
     const order = ["Quick actions", "Network", "Battery", "Location", "Apps", "Render debugging", "Telephony & sensors", "Accessibility", "Snapshots", "Recent actions"];
     for (const title of order) {
       const group = Array.from(groups.children).find((element) => (element as HTMLElement).dataset.group === title);
@@ -1342,7 +1326,7 @@ class Panes {
         const searchable = `${group.textContent} ${aliases[title] ?? ""} ${Array.from(group.querySelectorAll("input,select,button")).map((element) => `${element.getAttribute("placeholder") ?? ""} ${element.getAttribute("title") ?? ""}`).join(" ")}`.toLowerCase();
         group.hidden = !!query && !searchable.includes(query);
         if (!group.hidden) shown++;
-        group.open = query ? !group.hidden : (this.groupState.get(title) ?? (title === "Quick actions" || title === "Network"));
+        group.open = query ? !group.hidden : (this.groupState.get(title) ?? (title === "Quick actions" || title === "Network" || title === "Apps"));
       }
       empty.hidden = shown > 0;
     };
@@ -1359,250 +1343,280 @@ class Panes {
    * below reflects it and scripts can reproduce it.
    */
   private renderEmulatorControls(wrap: HTMLElement, target: () => DeviceView | null): void {
+    const view = target();
+    if (!view) return;
+    const generation = this.renderGeneration;
+    const device = view.entry.device;
+    const state = this.controlState.get(device) ?? {};
+    this.controlState.set(device, state);
+    const current = () => generation === this.renderGeneration;
     const status = el("div", { class: "tool-status", role: "status", "aria-live": "polite" });
     let statusTimer: number | null = null;
     const flash = (message: string, error = false) => {
+      if (!current()) return;
       status.textContent = message;
       status.classList.toggle("error", error);
       if (statusTimer) window.clearTimeout(statusTimer);
-      statusTimer = window.setTimeout(() => {
-        status.textContent = "";
-      }, 4_000);
+      statusTimer = window.setTimeout(() => { status.textContent = ""; }, 4_000);
     };
-    const run = async (action: string, params: Record<string, unknown>, okMessage?: string): Promise<unknown> => {
-      const view = target();
-      if (!view) {
-        flash("No device attached", true);
-        return null;
-      }
-      try {
-        const res = await fetch(view.entry.actionEndpoint, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action, params }),
-        });
-        const body = (await res.json()) as { ok: boolean; result?: unknown; message?: string };
-        if (!res.ok || !body.ok) {
-          flash(body.message ?? `${action} failed`, true);
-          return null;
-        }
-        if (okMessage) flash(okMessage);
-        return body.result;
-      } catch (err) {
-        flash(err instanceof Error ? err.message : String(err), true);
-        return null;
-      }
+    // Queue commands for each device so a late initial read cannot undo a setting.
+    const run = (action: string, params: Record<string, unknown>, okMessage?: string): Promise<unknown> => {
+      const request = async () => {
+        try {
+          const res = await fetch(view.entry.actionEndpoint, {
+            method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action, params }),
+          });
+          const body = (await res.json()) as { ok: boolean; result?: unknown; message?: string; error?: string };
+          if (!res.ok || !body.ok) { flash(body.message ?? body.error ?? `${action} failed`, true); return null; }
+          if (okMessage) flash(okMessage);
+          return body.result ?? {};
+        } catch (err) { flash(err instanceof Error ? err.message : String(err), true); return null; }
+      };
+      const result = (this.controlQueues.get(device) ?? Promise.resolve()).then(request);
+      this.controlQueues.set(device, result);
+      return result;
     };
-
-    const field = (placeholder: string, opts: { type?: string; value?: string; width?: number; min?: string; max?: string; step?: string } = {}) => {
-      const input = el("input", {
-        class: "input tool-input",
-        placeholder,
-        "aria-label": placeholder,
-        type: opts.type ?? "text",
-        value: opts.value,
-        min: opts.min,
-        max: opts.max,
-        step: opts.step,
-        style: opts.width ? `width:${opts.width}px` : undefined,
-      }) as HTMLInputElement;
-      return input;
-    };
+    const field = (placeholder: string, opts: { type?: string; value?: string; width?: number; min?: string; max?: string; step?: string } = {}) =>
+      el("input", { class: "input tool-input", placeholder, "aria-label": placeholder, type: opts.type ?? "text", value: opts.value,
+        min: opts.min, max: opts.max, step: opts.step, style: opts.width ? `width:${opts.width}px` : undefined }) as HTMLInputElement;
     const row = (...children: Array<Node | string | null | undefined>) => el("div", { class: "tool-form-row" }, ...children);
     const small = (label: string, title: string, fn: () => void) => button(label, title, fn, "small");
     const select = (options: Array<[string, string]>, value?: string, label = "Control setting") => {
-      const s = el("select", { class: "select tool-input", "aria-label": label }) as HTMLSelectElement;
-      for (const [v, label] of options) s.append(el("option", { value: v, text: label }));
-      if (value != null) s.value = value;
-      return s;
+      const input = el("select", { class: "select tool-input", "aria-label": label }) as HTMLSelectElement;
+      for (const [value, text] of options) input.append(el("option", { value, text }));
+      if (value != null) input.value = value;
+      return input;
     };
-    const toggle = (label: string, onChange: (checked: boolean) => void) => {
-      const box = el("input", { type: "checkbox" }) as HTMLInputElement;
-      box.indeterminate = true;
-      box.title = "Current state unavailable. Click to set.";
-      box.addEventListener("change", () => onChange(box.checked));
-      return { box, label: el("label", { class: "flag" }, box, ` ${label}`) };
-    };
+    const forms = new Map<string, HTMLElement>();
     const section = (title: string, ...rows: HTMLElement[]) => {
-      wrap.append(el("h3", { text: title }), el("div", { class: "tool-form" }, ...rows));
+      const form = el("div", { class: "tool-form", "data-summary": "" }, ...rows);
+      forms.set(title, form);
+      wrap.append(el("h3", { text: title }), form);
     };
-    const onEnter = (input: HTMLInputElement, fn: () => void) =>
-      input.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") fn();
+    const summary = (title: string, value: string) => {
+      const form = forms.get(title);
+      if (!form) return;
+      form.dataset.summary = value;
+      form.dispatchEvent(new Event("inspector-summary", { bubbles: true }));
+    };
+    const onEnter = (input: HTMLInputElement, fn: () => void) => input.addEventListener("keydown", (e) => { if (e.key === "Enter") fn(); });
+    const segmented = (label: string, options: Array<[string, string]>, value: string | undefined, apply: (value: string) => Promise<boolean>) => {
+      const group = el("div", { class: "inspector-segmented", role: "group", "aria-label": label });
+      const buttons = new Map<string, HTMLButtonElement>();
+      const set = (next?: string) => { for (const [value, button] of buttons) button.setAttribute("aria-pressed", String(value === next)); };
+      for (const [value, text] of options) {
+        const control = small(text, `${label}: ${text}`, () => {
+          for (const button of buttons.values()) button.disabled = true;
+          void apply(value).then((ok) => { if (ok) set(value); }).finally(() => { for (const button of buttons.values()) button.disabled = false; });
+        });
+        buttons.set(value, control); group.append(control);
+      }
+      set(value);
+      return { group, set };
+    };
+    const setting = (label: string, content: HTMLElement) => el("div", { class: "control-field" }, el("span", { text: label }), content);
+    const toggle = (label: string, key: string, apply: (value: boolean) => Promise<boolean>) => {
+      const box = el("input", { type: "checkbox", role: "switch", "aria-label": label }) as HTMLInputElement;
+      const set = (value: unknown) => {
+        box.indeterminate = typeof value !== "boolean";
+        box.checked = value === true;
+        box.title = box.indeterminate ? "Current state unavailable. Click to set." : "";
+      };
+      set(state[key]);
+      box.addEventListener("change", () => {
+        const next = box.checked;
+        set(state[key]); box.disabled = true;
+        void apply(next).then((ok) => { if (ok) state[key] = next; set(state[key]); }).finally(() => { box.disabled = false; });
       });
+      return { box, set, label: el("label", { class: "flag" }, box, ` ${label}`) };
+    };
 
-    // Location
-    const lat = field("Latitude", { type: "number", step: "any" });
-    const lon = field("Longitude", { type: "number", step: "any" });
+    const quick = el("div", { class: "tool-grid" });
+    const actionIcon = (paths: string) => `<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
+    const quickAction = (label: string, icon: string, action: string, params: Record<string, unknown>) => {
+      const control = button(`${icon}<span>${label}</span>`, label, () => void run(action, params, label));
+      control.classList.add("inspector-quick-action"); quick.append(control);
+    };
+    quickAction("Wake", icons.power, "button", { button: "wake" });
+    quickAction("Lock", actionIcon('<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/>'), "button", { button: "lock" });
+    quickAction("Notifications", actionIcon('<path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/>'), "button", { button: "notifications" });
+    quickAction("Quick settings", actionIcon('<path d="M4 7h16M4 17h16"/><circle cx="8" cy="7" r="3"/><circle cx="16" cy="17" r="3"/>'), "button", { button: "quick-settings" });
+    const screenshot = button(`${icons.camera}<span>Screenshot</span>`, "Screenshot", () => window.open(view.entry.screenshotEndpoint, "_blank"));
+    screenshot.classList.add("inspector-quick-action"); quick.append(screenshot);
+    quickAction("Low memory", actionIcon('<rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4m6-4v4M9 18v4m6-4v4M2 9h4m-4 6h4m12-6h4m-4 6h4"/>'), "memory-warning", {});
+    section("Quick actions", quick);
+
+    const networkSummary = () => summary("Network", `${state.speedLabel ?? "Unknown speed"} · ${state.delayLabel ?? "Unknown latency"}`);
+    const speed = segmented("Network speed", [["full", "Full"], ["lte", "LTE"], ["umts", "3G"], ["edge", "Edge"], ["off", "Off"]], state.speed as string | undefined, async (value) => {
+      // Off switches mobile data off; emulator speed 0 can mean unlimited.
+      const result = await run("network", value === "off" ? { data: false } : { speed: value, data: true }, value === "off" ? "Mobile data off (Wi-Fi unchanged)" : `Network speed ${value}`);
+      if (result == null) return false;
+      state.speed = value; state.speedLabel = value === "umts" ? "3G" : value === "off" ? "Mobile off" : value === "full" ? "Full" : value === "lte" ? "LTE" : "Edge";
+      state.data = value !== "off"; data.set(state.data); networkSummary(); return true;
+    });
+    speed.group.querySelector<HTMLButtonElement>('button:last-child')!.title = "Disable mobile data; Wi-Fi is controlled separately";
+    const delay = segmented("Network latency", [["none", "None"], ["50", "50 ms"], ["200", "200 ms"], ["1000", "1 s"]], state.delay as string | undefined, async (value) => {
+      const result = await run("network", { delay: value }, `Latency ${value === "none" ? "0" : value} ms`);
+      if (result == null) return false;
+      state.delay = value; state.delayLabel = value === "none" ? "0 ms" : value === "1000" ? "1 s" : `${value} ms`; networkSummary(); return true;
+    });
+    const networkToggle = (label: string, key: string) => toggle(label, key, async (on) => {
+      const result = await run("network", { [key]: on }, `${label} ${on ? "on" : "off"}`);
+      if (result == null) return false;
+      if (key === "data") { state.speed = undefined; state.speedLabel = on ? "Unknown speed" : "Mobile off"; speed.set(); networkSummary(); }
+      return true;
+    });
+    const wifi = networkToggle("Wi-Fi", "wifi"), data = networkToggle("Mobile data", "data"), airplane = networkToggle("Airplane mode", "airplane");
+    section("Network", setting("Speed profile", speed.group), setting("Added latency", delay.group), row(wifi.label, data.label, airplane.label));
+    networkSummary();
+    void run("network", {}).then((result) => {
+      const network = result as { airplane?: boolean; wifi?: boolean; data?: boolean } | null;
+      if (!network) return;
+      for (const [control, key] of [[airplane, "airplane"], [wifi, "wifi"], [data, "data"]] as const) {
+        if (typeof network[key] === "boolean") { state[key] = network[key]; control.set(network[key]); }
+      }
+      if (network.data === false) { state.speed = state.speed === "off" ? "off" : undefined; state.speedLabel = "Mobile off"; speed.set(state.speed as string | undefined); }
+      else if (network.data === true && state.speed === "off") { state.speed = undefined; state.speedLabel = "Unknown speed"; speed.set(); }
+      networkSummary();
+    });
+
+    const level = field("Battery level", { type: "range", min: "0", max: "100", step: "1", value: String(state.batteryLevel ?? 50) });
+    const levelText = el("output", { class: "inspector-battery-value", text: typeof state.batteryLevel === "number" ? `${state.batteryLevel}%` : "Unknown" });
+    level.disabled = typeof state.batteryLevel !== "number";
+    const power = segmented("Power source", [["ac", "AC"], ["none", "Battery"]], state.batteryPlugged as string | undefined, async (plugged) => {
+      const result = await run("battery", { plugged }, plugged === "ac" ? "Charging (AC)" : "Unplugged");
+      if (result == null) return false; setBattery(result); return true;
+    });
+    const setBattery = (result: unknown) => {
+      const battery = result as { level?: number | null; plugged?: string; status?: string | null };
+      if (typeof battery.level === "number") { state.batteryLevel = battery.level; level.value = String(battery.level); levelText.textContent = `${battery.level}%`; level.disabled = false; }
+      else { delete state.batteryLevel; levelText.textContent = "Unknown"; level.disabled = false; }
+      state.batteryPlugged = battery.plugged; power.set(battery.plugged);
+      const source = battery.plugged === "none" ? "Battery" : battery.plugged?.toUpperCase() ?? "Unknown source";
+      summary("Battery", `${typeof battery.level === "number" ? `${battery.level}%` : "Unknown"} · ${source}`);
+    };
+    level.addEventListener("input", () => { levelText.textContent = `${level.value}%`; });
+    level.addEventListener("change", () => {
+      const value = Number(level.value); level.disabled = true;
+      void run("battery", { level: value }, `Battery ${value}%`).then((result) => {
+        if (result != null) setBattery(result);
+        else { level.value = String(state.batteryLevel ?? 50); levelText.textContent = typeof state.batteryLevel === "number" ? `${state.batteryLevel}%` : "Unknown"; }
+      }).finally(() => { level.disabled = false; });
+    });
+    section("Battery", row(el("span", { class: "inspector-control-caption", text: "Level" }), levelText), row(level),
+      setting("Power source", power.group), row(small("Reset", "Restore real battery reporting", () => void run("battery", { reset: true }, "Battery reset").then((result) => { if (result != null) setBattery(result); }))));
+    summary("Battery", typeof state.batteryLevel === "number" ? `${state.batteryLevel}% · ${state.batteryPlugged === "none" ? "Battery" : String(state.batteryPlugged ?? "Unknown").toUpperCase()}` : "Unknown");
+    void run("battery", {}).then((result) => { if (result != null) setBattery(result); else level.disabled = false; });
+
+    const lat = field("Latitude", { type: "number", step: "any", min: "-90", max: "90", value: state.latitude as string | undefined });
+    const lon = field("Longitude", { type: "number", step: "any", min: "-180", max: "180", value: state.longitude as string | undefined });
+    const presets = el("div", { class: "inspector-location-presets", role: "group", "aria-label": "Location presets" });
+    for (const [label, latitude, longitude] of [["Googleplex", "37.4220", "-122.0841"], ["London", "51.5074", "-0.1278"], ["Tokyo", "35.6762", "139.6503"]] as const) {
+      presets.append(small(label, `Choose ${label} coordinates`, () => { lat.value = latitude!; lon.value = longitude!; rememberLocation(); }));
+    }
+    const rememberLocation = () => { state.latitude = lat.value; state.longitude = lon.value; };
+    lat.addEventListener("input", rememberLocation); lon.addEventListener("input", rememberLocation);
     const setGeo = () => {
       const latitude = Number(lat.value), longitude = Number(lon.value);
       if (!lat.value || !lon.value || !Number.isFinite(latitude) || !Number.isFinite(longitude) || Math.abs(latitude) > 90 || Math.abs(longitude) > 180) {
-        flash("Enter a latitude from −90 to 90 and longitude from −180 to 180.", true);
-        return;
+        flash("Enter a latitude from −90 to 90 and longitude from −180 to 180.", true); return;
       }
-      void run("geo", { lat: latitude, lon: longitude }, `Location ${lat.value}, ${lon.value}`);
+      void run("geo", { lat: latitude, lon: longitude }, `Location ${lat.value}, ${lon.value}`).then((result) => {
+        if (result == null) return; state.locationSummary = `${latitude}, ${longitude}`; summary("Location", String(state.locationSummary));
+      });
     };
-    onEnter(lat, setGeo);
-    onEnter(lon, setGeo);
-    section("Location", row(lat, lon, small("Set", "Send a GPS fix (adb emu geo fix)", setGeo)));
+    onEnter(lat, setGeo); onEnter(lon, setGeo);
+    section("Location", presets, row(lat, lon), row(small("Send location", "Send a GPS fix (adb emu geo fix)", setGeo)));
+    summary("Location", String(state.locationSummary ?? "No location sent"));
 
-    // Network
-    const speed = select(
-      [
-        ["", "speed…"],
-        ["full", "full"],
-        ["lte", "lte"],
-        ["hsdpa", "hsdpa"],
-        ["umts", "umts"],
-        ["edge", "edge"],
-        ["gprs", "gprs"],
-        ["gsm", "gsm"],
-      ],
-      "", "Network speed",
-    );
-    const delay = select(
-      [
-        ["", "delay…"],
-        ["none", "none"],
-        ["umts", "umts"],
-        ["edge", "edge"],
-        ["gprs", "gprs"],
-      ],
-      "", "Network delay",
-    );
-    speed.addEventListener("change", () => speed.value && void run("network", { speed: speed.value }, `Speed ${speed.value}`));
-    delay.addEventListener("change", () => delay.value && void run("network", { delay: delay.value }, `Delay ${delay.value}`));
-    const airplane = toggle("airplane", (on) => void run("network", { airplane: on }, `Airplane ${on ? "on" : "off"}`));
-    const wifi = toggle("wifi", (on) => void run("network", { wifi: on }, `Wi-Fi ${on ? "on" : "off"}`));
-    const data = toggle("mobile data", (on) => void run("network", { data: on }, `Mobile data ${on ? "on" : "off"}`));
-    section("Network", row(el("label", { class: "control-field" }, el("span", { text: "Speed profile" }), speed),
-      el("label", { class: "control-field" }, el("span", { text: "Added latency" }), delay)), row(airplane.label, wifi.label, data.label));
-    void run("network", {}).then((r) => {
-      const s = r as { airplane?: boolean; wifi?: boolean; data?: boolean } | null;
-      if (!s) return;
-      for (const [control, value] of [[airplane, s.airplane], [wifi, s.wifi], [data, s.data]] as const) {
-        if (typeof value === "boolean") { control.box.checked = value; control.box.indeterminate = false; control.box.title = ""; }
-      }
+    const url = field("https://… or myapp://…", { value: state.url as string | undefined });
+    const pkg = field("App package", { value: state.package as string | undefined });
+    url.addEventListener("input", () => { state.url = url.value; });
+    pkg.addEventListener("input", () => { state.package = pkg.value; summary("Apps", pkg.value); });
+    const openUrl = () => { if (url.value) void run("open", { url: url.value }, `Opened ${url.value}`); };
+    onEnter(url, openUrl);
+    section("Apps", setting("Package", pkg), row(
+      small("Launch", "Launch the app", () => { if (pkg.value) void run("launch", { package: pkg.value }, `Launched ${pkg.value}`); }),
+      small("Stop", "Force-stop the app", () => { if (pkg.value) void run("stop", { package: pkg.value }, `Stopped ${pkg.value}`); }),
+      small("Clear", "Clear the app's data", () => { if (pkg.value) void run("clear-data", { package: pkg.value }, `Cleared ${pkg.value}`); })),
+      setting("Deep link / URL", row(url, small("Open", "Open a URL / deep link", openUrl))));
+    summary("Apps", pkg.value);
+    void fetch(view.entry.foregroundEndpoint).then(async (res) => {
+      if (!res.ok) return;
+      const foreground = await res.json() as { packageName?: string };
+      if (!pkg.value && foreground.packageName) { pkg.value = foreground.packageName; state.package = pkg.value; summary("Apps", pkg.value); }
+    }).catch(() => {});
+
+    const debugFlags: Record<string, string> = { overdraw: "Show overdraw", "gpu-profile": "GPU profile bars", "layout-bounds": "Layout bounds", "show-taps": "Show taps", "pointer-location": "Pointer location", "slow-animations": "Slow animations (×5)" };
+    const debug = new Map<string, ReturnType<typeof toggle>>();
+    const debugSummary = () => {
+      const known = Object.keys(debugFlags).filter((key) => typeof state[`debug:${key}`] === "boolean");
+      summary("Render debugging", `${known.filter((key) => state[`debug:${key}`] === true).length} on${known.length < Object.keys(debugFlags).length ? " · Unknown state" : ""}`);
+    };
+    for (const [option, label] of Object.entries(debugFlags)) debug.set(option, toggle(label, `debug:${option}`, async (enabled) => {
+      const result = await run("debug", { option, enabled }, `${label} ${enabled ? "on" : "off"}`);
+      if (result == null) return false; state[`debug:${option}`] = enabled; debugSummary(); return true;
+    }));
+    section("Render debugging", row(...Array.from(debug.values()).map((control) => control.label))); debugSummary();
+    void run("debug", {}).then((result) => {
+      const flags = (result as { flags?: Record<string, boolean> } | null)?.flags;
+      if (!flags) return;
+      for (const [key, control] of debug) { state[`debug:${key}`] = flags[key]; control.set(flags[key]); }
+      debugSummary();
     });
 
-    // Battery
-    const level = field("Level %", { type: "number", min: "0", max: "100", width: 90 });
-    const setLevel = () => level.value !== "" && void run("battery", { level: Number(level.value) }, `Battery ${level.value}%`);
-    onEnter(level, setLevel);
-    section(
-      "Battery",
-      row(
-        level,
-        small("Set", "Fake the battery level", setLevel),
-        small("Unplug", "Unplug the charger", () => void run("battery", { plugged: "none" }, "Unplugged")),
-        small("AC", "Plug into AC", () => void run("battery", { plugged: "ac" }, "Charging (AC)")),
-        small("Reset", "Restore real battery reporting", () => void run("battery", { reset: true }, "Battery reset")),
-      ),
-    );
-
-    // Telephony + sensors
-    const number = field("Phone number", { value: "5551234567", width: 150 });
-    const smsText = field("SMS text");
-    section(
-      "Telephony & sensors",
-      row(
-        number,
-        small("Call", "Incoming call", () => void run("call", { number: number.value, op: "call" }, `Calling from ${number.value}`)),
-        small("End", "End the call", () => void run("call", { number: number.value, op: "end" }, "Call ended")),
-      ),
+    const number = field("Phone number", { value: String(state.phoneNumber ?? "5551234567") });
+    const smsText = field("SMS text", { value: state.sms as string | undefined });
+    number.addEventListener("input", () => { state.phoneNumber = number.value; }); smsText.addEventListener("input", () => { state.sms = smsText.value; });
+    section("Telephony & sensors", row(number,
+      small("Call", "Incoming call", () => void run("call", { number: number.value, op: "call" }, `Calling from ${number.value}`)),
+      small("End", "End the call", () => void run("call", { number: number.value, op: "end" }, "Call ended"))),
       row(smsText, small("Send SMS", "Deliver an incoming SMS", () => void run("sms", { number: number.value, text: smsText.value }, "SMS delivered"))),
-      row(small("Fingerprint", "Touch the fingerprint sensor (finger 1)", () => void run("fingerprint", { id: 1 }, "Fingerprint touched"))),
-    );
+      row(small("Touch fingerprint sensor", "Touch the fingerprint sensor (finger 1)", () => void run("fingerprint", { id: 1 }, "Fingerprint touched"))));
 
-    // Apps
-    const url = field("https://… or myapp://…");
-    const openUrl = () => url.value && void run("open", { url: url.value }, `Opened ${url.value}`);
-    onEnter(url, openUrl);
-    const pkg = field("com.example.app");
-    section(
-      "Apps",
-      row(url, small("Open", "Open a URL / deep link", openUrl)),
-      row(
-        pkg,
-        small("Launch", "Launch the app", () => pkg.value && void run("launch", { package: pkg.value }, `Launched ${pkg.value}`)),
-        small("Stop", "Force-stop the app", () => pkg.value && void run("stop", { package: pkg.value }, `Stopped ${pkg.value}`)),
-        small("Clear", "Clear the app's data", () => pkg.value && void run("clear-data", { package: pkg.value }, `Cleared ${pkg.value}`)),
-      ),
-    );
-    void (async () => {
-      const view = target();
-      if (!view) return;
-      try {
-        const res = await fetch(view.entry.foregroundEndpoint);
-        if (res.ok) {
-          const fg = (await res.json()) as { packageName?: string };
-          if (fg.packageName && !pkg.value) pkg.value = fg.packageName;
-        }
-      } catch {}
-    })();
-
-    // Accessibility / display
-    const fontScale = select(
-      [
-        ["", "font scale…"],
-        ["0.85", "0.85×"],
-        ["1", "1.0×"],
-        ["1.15", "1.15×"],
-        ["1.3", "1.3×"],
-        ["1.5", "1.5×"],
-        ["2", "2.0×"],
-      ],
-      "", "Font scale",
-    );
-    fontScale.addEventListener("change", () => fontScale.value && void run("font-scale", { scale: Number(fontScale.value) }, `Font scale ${fontScale.value}×`));
-    const dpi = field("dpi", { type: "number", min: "72", max: "1200", width: 80 });
-    const setDpi = () => dpi.value && void run("density", { dpi: dpi.value }, `Density ${dpi.value}`);
+    const fontScale = select([["", "Current scale unknown"], ["0.85", "0.85×"], ["1", "1.0×"], ["1.15", "1.15×"], ["1.3", "1.3×"], ["1.5", "1.5×"], ["2", "2.0×"]], typeof state.fontScale === "number" ? String(state.fontScale) : "", "Font scale");
+    const syncFont = (scale: unknown) => {
+      if (typeof scale !== "number" || !Number.isFinite(scale)) return;
+      state.fontScale = scale; state.largeText = scale >= 1.3; fontScale.value = String(scale); largeText.set(state.largeText);
+    };
+    fontScale.addEventListener("change", () => {
+      const previous = state.fontScale; const scale = Number(fontScale.value);
+      if (!fontScale.value) return; fontScale.value = previous == null ? "" : String(previous); fontScale.disabled = true;
+      void run("font-scale", { scale }, `Font scale ${scale}×`).then((result) => { if (result != null) syncFont((result as { scale: number }).scale); }).finally(() => { fontScale.disabled = false; });
+    });
+    const largeText = toggle("Large text (1.3×)", "largeText", async (on) => {
+      const result = await run("font-scale", { scale: on ? 1.3 : 1 }, `Large text ${on ? "on" : "off"}`);
+      if (result == null) return false; syncFont((result as { scale: number }).scale); return true;
+    });
+    const talkback = toggle("TalkBack", "talkback", async (enabled) => (await run("talkback", { enabled }, `TalkBack ${enabled ? "on" : "off"}`)) != null);
+    const contrast = toggle("High-contrast text", "contrast", async (enabled) => (await run("high-contrast", { enabled }, `High-contrast text ${enabled ? "on" : "off"}`)) != null);
+    const dpi = field("dpi", { type: "number", min: "72", max: "1200" });
+    const setDpi = () => { if (dpi.value) void run("density", { dpi: dpi.value }, `Density ${dpi.value}`); };
     onEnter(dpi, setDpi);
-    const talkback = toggle("TalkBack", (on) => void run("talkback", { enabled: on }, `TalkBack ${on ? "on" : "off"}`));
-    section(
-      "Accessibility",
-      row(fontScale, dpi, small("Set", "Override display density", setDpi), small("Reset", "Reset density", () => void run("density", { dpi: "reset" }, "Density reset"))),
-      row(talkback.label),
-    );
+    section("Accessibility", row(talkback.label, largeText.label, contrast.label), setting("Font scale", fontScale),
+      row(dpi, small("Set", "Override display density", setDpi), small("Reset", "Reset density", () => void run("density", { dpi: "reset" }, "Density reset"))));
+    void run("font-scale", {}).then((result) => { if (result != null) { syncFont((result as { scale: number }).scale); state.largeText = typeof state.fontScale === "number" ? state.fontScale >= 1.3 : undefined; } });
+    for (const [action, key, control] of [["talkback", "talkback", talkback], ["high-contrast", "contrast", contrast]] as const) {
+      void run(action, {}).then((result) => { if (result != null) { state[key] = (result as { enabled?: boolean }).enabled; control.set(state[key]); } });
+    }
 
-    // Snapshots
     const snapName = field("snapshot name", { value: "clean" });
     const snapList = el("div", { class: "snap-list" });
     const refreshSnapshots = async () => {
-      const r = (await run("snapshot", { op: "list" })) as { snapshots: Array<{ tag: string; size?: string; date?: string }> } | null;
+      const result = (await run("snapshot", { op: "list" })) as { snapshots?: Array<{ tag: string; size?: string; date?: string }> } | null;
       snapList.replaceChildren();
-      if (!r) return;
-      if (r.snapshots.length === 0) {
-        snapList.append(el("span", { class: "muted", text: "No snapshots yet." }));
-        return;
-      }
-      for (const s of r.snapshots) {
-        snapList.append(
-          el(
-            "div",
-            { class: "snap-row" },
-            el("span", {}, el("strong", { text: s.tag }), s.size ? el("span", { class: "muted", text: `  ${s.size}` }) : null),
-            el(
-              "span",
-              { class: "snap-actions" },
-              small("Load", `Restore ${s.tag}`, () => void run("snapshot", { op: "load", name: s.tag }, `Loaded ${s.tag}`)),
-              small("Delete", `Delete ${s.tag}`, () => void run("snapshot", { op: "delete", name: s.tag }, `Deleted ${s.tag}`).then(refreshSnapshots)),
-            ),
-          ),
-        );
-      }
+      if (!result?.snapshots) return;
+      if (result.snapshots.length === 0) { snapList.append(el("span", { class: "muted", text: "No snapshots yet." })); return; }
+      for (const snapshot of result.snapshots) snapList.append(el("div", { class: "snap-row" },
+        el("span", {}, el("strong", { text: snapshot.tag }), snapshot.size ? el("span", { class: "muted", text: `  ${snapshot.size}` }) : null),
+        el("span", { class: "snap-actions" },
+          small("Load", `Restore ${snapshot.tag}`, () => void run("snapshot", { op: "load", name: snapshot.tag }, `Loaded ${snapshot.tag}`)),
+          small("Delete", `Delete ${snapshot.tag}`, () => void run("snapshot", { op: "delete", name: snapshot.tag }, `Deleted ${snapshot.tag}`).then((result) => { if (result != null) void refreshSnapshots(); })))));
     };
-    section(
-      "Snapshots",
-      row(
-        snapName,
-        small("Save", "Save the emulator state", () => snapName.value && void run("snapshot", { op: "save", name: snapName.value }, `Saved ${snapName.value}`).then(refreshSnapshots)),
-        small("Load", "Restore this snapshot", () => snapName.value && void run("snapshot", { op: "load", name: snapName.value }, `Loaded ${snapName.value}`)),
-      ),
-      snapList,
-    );
+    section("Snapshots", row(snapName,
+      small("Save", "Save the emulator state", () => { if (snapName.value) void run("snapshot", { op: "save", name: snapName.value }, `Saved ${snapName.value}`).then((result) => { if (result != null) void refreshSnapshots(); }); }),
+      small("Load", "Restore this snapshot", () => { if (snapName.value) void run("snapshot", { op: "load", name: snapName.value }, `Loaded ${snapName.value}`); })), snapList);
     void refreshSnapshots();
-
     wrap.append(status);
   }
 

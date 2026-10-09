@@ -346,13 +346,31 @@ export const ACTIONS: ActionSpec[] = [
   },
   {
     name: "debug",
-    description: `Toggle an Android render/debug flag (${Object.keys(DEBUG_FLAGS).join(" | ")})`,
+    description: `Toggle an Android render/debug flag (${Object.keys(DEBUG_FLAGS).join(" | ")}); no params reads all flags`,
     params: {
-      option: { type: "string", description: "Flag", required: true, enum: Object.keys(DEBUG_FLAGS) },
-      enabled: { type: "boolean", description: "on/off", required: true },
+      option: { type: "string", description: "Flag (omit to read all flags)", enum: Object.keys(DEBUG_FLAGS) },
+      enabled: { type: "boolean", description: "on/off (required when setting a flag)" },
     },
     async run(ctx, params) {
-      const option = oneOf(params, "option", Object.keys(DEBUG_FLAGS), true)!;
+      const option = oneOf(params, "option", Object.keys(DEBUG_FLAGS));
+      if (option == null && params.enabled == null) {
+        const reads: Record<string, [string, string]> = {
+          overdraw: ["getprop debug.hwui.overdraw", "show"],
+          "gpu-profile": ["getprop debug.hwui.profile", "visual_bars"],
+          "layout-bounds": ["getprop debug.layout", "true"],
+          "show-taps": ["settings get system show_touches", "1"],
+          "pointer-location": ["settings get system pointer_location", "1"],
+        };
+        const flags: Record<string, boolean | null> = {};
+        for (const [flag, [command, on]] of Object.entries(reads)) {
+          const raw = (await ctx.shell.run(command)).trim();
+          flags[flag] = raw === on ? true : /^(0|false|1|)$/i.test(raw) ? false : null;
+        }
+        const scales = await Promise.all(["window_animation_scale", "transition_animation_scale", "animator_duration_scale"].map(async (key) => Number((await ctx.shell.run(`settings get global ${key}`)).trim())));
+        flags["slow-animations"] = scales.every((scale) => scale === 5) ? true : scales.every((scale) => scale === 1) ? false : null;
+        return { flags };
+      }
+      if (option == null) throw new ActionError("'option' is required", "bad_request");
       const enabled = bool(params, "enabled");
       if (enabled == null) throw new ActionError("'enabled' is required", "bad_request");
       ctx.record({ kind: "debug", action: option, summary: `Debug ${option} ${enabled ? "on" : "off"}`, details: { option, enabled } });
@@ -618,9 +636,15 @@ export const ACTIONS: ActionSpec[] = [
   {
     name: "font-scale",
     description: "Set the system font scale (1.0 = default; Android's Settings offers 0.85–2.0)",
-    params: { scale: { type: "number", description: "Font scale, e.g. 1.3", required: true } },
+    params: { scale: { type: "number", description: "Font scale, e.g. 1.3; omit to read current scale" } },
     async run(ctx, params) {
-      const scale = num(params, "scale", true, [0.5, 3])!;
+      const scale = num(params, "scale", false, [0.5, 3]);
+      if (scale == null) {
+        const raw = (await ctx.shell.run("settings get system font_scale")).trim();
+        const current = raw === "null" || raw === "" ? 1 : Number(raw);
+        if (!Number.isFinite(current) || current < 0.5 || current > 3) throw new ActionError("Could not read font scale");
+        return { scale: current };
+      }
       ctx.record({ kind: "a11y", action: "font-scale", summary: `Font scale ${scale}`, details: { scale } });
       await ctx.shell.run(`settings put system font_scale ${scale}`);
       return { scale };
@@ -679,10 +703,14 @@ export const ACTIONS: ActionSpec[] = [
   {
     name: "talkback",
     description: "Turn the TalkBack screen reader on/off (needs a Google/Play image with TalkBack installed)",
-    params: { enabled: { type: "boolean", description: "on/off", required: true } },
+    params: { enabled: { type: "boolean", description: "on/off; omit to read current state" } },
     async run(ctx, params) {
       const enabled = bool(params, "enabled");
-      if (enabled == null) throw new ActionError("'enabled' is required", "bad_request");
+      if (enabled == null) {
+        const services = await ctx.shell.run("settings get secure enabled_accessibility_services");
+        const active = (await ctx.shell.run("settings get secure accessibility_enabled")).trim() === "1";
+        return { enabled: active && /talkback/i.test(services) };
+      }
       ctx.record({ kind: "a11y", action: "talkback", summary: `TalkBack ${enabled ? "on" : "off"}`, details: { enabled } });
       if (!enabled) {
         await ctx.shell.run("settings delete secure enabled_accessibility_services; settings put secure accessibility_enabled 0");
@@ -698,6 +726,22 @@ export const ACTIONS: ActionSpec[] = [
       }
       await ctx.shell.run(`settings put secure enabled_accessibility_services ${component}; settings put secure accessibility_enabled 1`);
       return { enabled: true, service: component };
+    },
+  },
+
+  {
+    name: "high-contrast",
+    description: "Enable Android high-contrast text; no params reads the current state",
+    params: { enabled: { type: "boolean", description: "Enable high-contrast text" } },
+    async run(ctx, params) {
+      const enabled = bool(params, "enabled");
+      if (enabled == null) {
+        return { enabled: (await ctx.shell.run("settings get secure high_text_contrast_enabled")).trim() === "1" };
+      }
+      const result = await ctx.shell.runWithCode(`settings put secure high_text_contrast_enabled ${enabled ? 1 : 0}`);
+      if (result.code !== 0) throw new ActionError(result.out.trim() || "Could not set high-contrast text");
+      ctx.record({ kind: "a11y", action: "high-contrast", summary: `High-contrast text ${enabled ? "on" : "off"}`, details: { enabled } });
+      return { enabled };
     },
   },
 
