@@ -214,7 +214,7 @@ class DeviceView {
   private ws: WebSocket | null = null;
   private suspended = false;
   private mjpegRetry: number | null = null;
-  private cancelInput: () => void = () => {};
+  private cancelInput: (flushText?: boolean) => void = () => {};
   private closed = false;
 
   private config: ScreenConfig;
@@ -466,7 +466,7 @@ class DeviceView {
       }
     };
     ws.onclose = () => {
-      this.cancelInput();
+      this.cancelInput(false);
       this.ws = null;
       if (!this.closed) {
         this.setStatus("reconnecting", false);
@@ -815,7 +815,8 @@ class DeviceView {
       if (surface.hasPointerCapture(id)) surface.releasePointerCapture(id);
     };
     const heldKeys = new Set<string>();
-    this.cancelInput = () => {
+    this.cancelInput = (flushText = true) => {
+      if (flushText) this.flushText();
       finish();
       for (const code of heldKeys) this.send(0x06, { type: "up", code });
       heldKeys.clear();
@@ -967,6 +968,7 @@ class DeviceView {
     this.suspended = suspended;
     if (suspended) {
       this.streamAbort?.abort();
+      this.awaitingSince = 0;
       if (this.mjpegRetry !== null) clearTimeout(this.mjpegRetry);
       this.mjpegRetry = null;
       this.teardownDecoder();
@@ -976,7 +978,7 @@ class DeviceView {
   }
 
   destroy(): void {
-    this.cancelInput();
+    this.cancelInput(false);
     this.closed = true;
     this.streamAbort?.abort();
     if (this.mjpegRetry !== null) clearTimeout(this.mjpegRetry);
