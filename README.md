@@ -30,6 +30,12 @@ It is a faithful Android port of [serve-sim](https://github.com/EvanBacon/serve-
 - Multiple emulators at once — boot and attach AVDs straight from the Devices panel.
 - Every command works headless (straight over adb) when no server is running, and through the server (shared event log, live viewers) when one is.
 
+### Using the preview on a phone
+
+Open the served URL in your mobile browser. The device selector chooses the preview and the target for Tools and Logs. On desktop, clicking or focusing a preview also selects it. Phones show one device at a time; inactive previews and previews in background tabs pause their streams.
+
+Touch the preview to tap or drag. Additional fingers are ignored during a gesture. Open **Text input** to use your phone keyboard, then press **Send**; **Enter** and **Backspace** send those keys separately. Android's ADB text input supports ASCII characters only. Text entered in the panel stays there if disconnected so you can retry, and device commands are never replayed after reconnecting. Tools and Logs open a full-width panel on phones; **Close** returns to the preview.
+
 ## Why?
 
 Hosted emulators can be hard to test. `serve-avd` lets you test the hosted infra locally first for faster iteration. When you're ready to host an emulator remotely, simply tunnel the served URL and users can interact with the emulator as if it were running locally on their device.
@@ -462,6 +468,8 @@ npm install
 npm run build       # bundle CLI + middleware + browser client into dist/
 npm test            # unit tests (H.264 parser, XML/rotation/keymap parsers, find/wait, replay, MCP handler)
 npm run typecheck
+npx playwright install chromium  # one-time browser setup
+npm run test:browser             # builds client, tests UI + WebSocket commands with mock devices
 ```
 
 ## Credit & License
