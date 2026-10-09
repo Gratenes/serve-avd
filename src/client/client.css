@@ -679,3 +679,62 @@ body {
   opacity: 0.45;
   cursor: not-allowed;
 }
+
+/* Adapt to browser chrome, soft keyboards, and the selected mobile preview. */
+#app { height: 100dvh; }
+.layout { min-width: 0; position: relative; }
+.stage { min-width: 0; }
+.device-selector { width: auto; max-width: 220px; }
+.device-selector[hidden] { display: none; }
+.device.selected-device .device-head { border-color: var(--accent-dim); }
+.screen-wrap {
+  height: auto;
+  width: min(calc((100dvh - 280px) * var(--screen-aspect, .45)), calc(100vw - 72px));
+}
+.device.landscape .screen-wrap { width: min(calc((100dvh - 280px) * var(--screen-aspect, 1.78)), calc(100vw - 72px), 1200px); }
+.layout:has(.panes:not(.hidden)) .device.landscape .screen-wrap { width: min(calc((100dvh - 280px) * var(--screen-aspect, 1.78)), calc(100vw - 432px), 1200px); }
+.text-entry { width: 100%; max-width: 340px; }
+.text-entry summary { cursor: pointer; padding: 8px; color: var(--text-dim); }
+.text-entry textarea { resize: vertical; min-height: 60px; }
+.text-actions { display: flex; gap: 8px; margin-top: 8px; }
+.btn:focus-visible, .pane-tab:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+@media (max-width: 700px), (pointer: coarse) and (max-height: 500px) {
+  .topbar { flex-wrap: wrap; gap: 8px; padding: max(8px, env(safe-area-inset-top)) 12px 8px; }
+  .brand { flex: 1; }
+  .brand > .muted { display: none; }
+  .device-selector { max-width: 55%; }
+  .topbar-actions { width: 100%; justify-content: center; }
+  .btn, .icon-btn, .pane-tab { min-height: 44px; }
+  .input, .select { font-size: 16px; }
+  .stage { padding: 12px 12px max(12px, env(safe-area-inset-bottom)); gap: 16px; }
+  .device { width: 100%; }
+  .device:not(.selected-device) { display: none; }
+  .device-title { max-width: 100%; }
+  .serial { overflow-wrap: anywhere; }
+  .device-chips { flex-wrap: wrap; justify-content: center; gap: 10px; }
+  .device-frame { max-width: 100%; padding: 6px; border-radius: 20px; }
+  .screen-wrap, .device.landscape .screen-wrap,
+  .layout:has(.panes:not(.hidden)) .device.landscape .screen-wrap {
+    width: min(calc((100dvh - 340px) * var(--screen-aspect, .45)), calc(100vw - 44px));
+    min-width: min(160px, calc(100vw - 44px));
+  }
+  .device-controls { width: 100%; }
+  .tool-row { max-width: 100%; }
+  .panes { position: absolute; inset: 0; width: 100%; z-index: 10; border-left: 0; }
+  .pane-body { padding-bottom: max(14px, env(safe-area-inset-bottom)); }
+  .grid-row { min-width: 0; }
+  .grid-row > div { min-width: 0; overflow-wrap: anywhere; }
+}
+
+@media (pointer: coarse) and (max-height: 500px) {
+  .topbar-actions { width: auto; }
+  .device-selector { max-width: 180px; }
+  .stage { padding: 6px; }
+  .device { gap: 6px; }
+  .screen-wrap, .device.landscape .screen-wrap,
+  .layout:has(.panes:not(.hidden)) .device.landscape .screen-wrap {
+    width: min(calc((100dvh - 240px) * var(--screen-aspect, .45)), calc(100vw - 44px));
+    min-width: 0;
+  }
+}

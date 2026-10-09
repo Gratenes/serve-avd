@@ -214,7 +214,9 @@ class DeviceView {
   private noticeTimer: number | null = null;
 
   private ws: WebSocket | null = null;
-  private wsQueue: Uint8Array[] = [];
+  private suspended = false;
+  private mjpegRetry: number | null = null;
+  private cancelInput: () => void = () => {};
   private closed = false;
 
   private config: ScreenConfig;
@@ -272,8 +274,8 @@ class DeviceView {
     this.setTouchCursor(false);
 
     this.remote = new RemoteControls(entry.name, (button) => {
-      // Never enter send()'s reconnect queue with a remote command.
-      if (!this.closed && this.ws?.readyState === WebSocket.OPEN) this.sendButton(button);
+      // Remote commands only target a connected, active preview.
+      if (!this.closed && !this.suspended && this.ws?.readyState === WebSocket.OPEN) this.sendButton(button);
       else this.remote.setConnected(false);
     });
 
@@ -322,6 +324,7 @@ class DeviceView {
     const { width, height } = this.frameSize ?? this.config;
     if (!(width > 0 && height > 0)) return;
     this.surfaceWrap.style.aspectRatio = `${width} / ${height}`;
+    this.surfaceWrap.style.setProperty("--screen-aspect", String(width / height));
     this.root.classList.toggle("landscape", width > height);
   }
 
@@ -357,7 +360,27 @@ class DeviceView {
       iconButton("camera", "Save screenshot", () => window.open(this.entry.screenshotEndpoint, "_blank")),
     );
 
-    return el("div", { class: "device-controls" }, nav, tools);
+    const textPanel = el("details", { class: "text-entry" });
+    const input = el("textarea", { class: "input", rows: "2", "aria-label": `Text for ${this.entry.name}`, placeholder: "Type text to send…" });
+    const sendText = () => {
+      if (!input.value || this.ws?.readyState !== WebSocket.OPEN) {
+        if (input.value) this.showNotice("Device disconnected. Text kept for retry.", false);
+        return;
+      }
+      if (/[^\x00-\x7f]/.test(input.value)) {
+        this.showNotice("Android text input supports ASCII characters only.", false);
+        return;
+      }
+      this.send(0x0d, { text: input.value });
+      input.value = "";
+    };
+    textPanel.append(el("summary", { text: "Text input" }), input,
+      el("p", { class: "muted", text: "ASCII text only. Send inserts text into the focused device field." }),
+      el("div", { class: "text-actions" },
+        button("Send", "Send text to device", sendText),
+        button("Enter", "Press Enter on device", () => this.sendKey("Enter")),
+        button("Backspace", "Press Backspace on device", () => this.sendKey("Backspace"))));
+    return el("div", { class: "device-controls" }, nav, tools, textPanel);
   }
 
   /**
@@ -403,6 +426,11 @@ class DeviceView {
     this.send(0x0e, { theme: this.darkTheme ? "dark" : "light" });
   }
 
+  private sendKey(code: string): void {
+    this.send(0x06, { type: "down", code });
+    this.send(0x06, { type: "up", code });
+  }
+
   sendButton(name: string): void {
     this.send(0x04, { button: name });
   }
@@ -426,10 +454,9 @@ class DeviceView {
     ws.binaryType = "arraybuffer";
     this.ws = ws;
     ws.onopen = () => {
-      this.remote.setConnected(true);
+      this.remote.setConnected(!this.suspended);
+      if (this.suspended) return;
       this.setStatus(this.mode === "h264" ? "H.264" : "MJPEG", true);
-      for (const frame of this.wsQueue) ws.send(frame);
-      this.wsQueue = [];
     };
     ws.onmessage = (event) => {
       const data = new Uint8Array(event.data as ArrayBuffer);
@@ -450,6 +477,8 @@ class DeviceView {
     };
     ws.onclose = () => {
       this.remote.setConnected(false);
+
+      this.cancelInput();
       this.ws = null;
       if (!this.closed) {
         this.setStatus("reconnecting", false);
@@ -464,11 +493,11 @@ class DeviceView {
     const frame = new Uint8Array(1 + json.length);
     frame[0] = tag;
     frame.set(json, 1);
+    if (this.closed || this.suspended) return;
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(frame);
-    } else if (tag !== 0x03 && tag !== 0x05 && tag !== 0x0b) {
-      // Queue everything except high-rate touch/scroll traffic.
-      this.wsQueue.push(frame);
+    } else {
+      this.showNotice("Device disconnected. Try again when connected.", false);
     }
   }
 
@@ -482,25 +511,36 @@ class DeviceView {
   }
 
   private runMjpegStream(): void {
+    if (this.closed || this.suspended) return;
+    if (this.mjpegRetry !== null) clearTimeout(this.mjpegRetry);
+    this.mjpegRetry = null;
     this.setStatus("MJPEG", true);
     this.fpsChip.textContent = "stills";
-    const img = el("img", { class: "screen-canvas", alt: this.entry.name });
-    this.img = img;
-    this.canvas.replaceWith(img);
+    const img = this.img ?? el("img", { class: "screen-canvas", alt: this.entry.name });
+    if (!this.img) {
+      this.img = img;
+      this.canvas.replaceWith(img);
+      img.addEventListener("error", () => {
+        if (!this.closed && !this.suspended && this.mjpegRetry === null) {
+          this.mjpegRetry = window.setTimeout(() => this.runMjpegStream(), 1_500);
+        }
+      });
+    }
     const connect = () => {
-      if (this.closed) return;
+      if (this.closed || this.suspended) return;
       img.src = `${this.entry.streamMjpegEndpoint}?t=${Date.now()}`;
     };
-    img.addEventListener("error", () => {
-      if (!this.closed) setTimeout(connect, 1_500);
-    });
     connect();
   }
 
   private async runAvccStream(): Promise<void> {
     const demuxer = new AvccDemuxer();
     let backoff = 500;
-    while (!this.closed) {
+    while (!this.closed && this.mode === "h264") {
+      if (this.suspended) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        continue;
+      }
       try {
         this.streamAbort = new AbortController();
         const response = await fetch(this.entry.streamAvccEndpoint, { signal: this.streamAbort.signal });
@@ -519,7 +559,8 @@ class DeviceView {
         // fall through to reconnect
       }
       this.teardownDecoder();
-      if (this.closed) return;
+      if (this.closed || this.mode !== "h264") return;
+      if (this.suspended) continue;
       this.setStatus("reconnecting", false);
       await new Promise((r) => setTimeout(r, backoff));
       backoff = Math.min(backoff * 2, 4_000);
@@ -527,6 +568,7 @@ class DeviceView {
   }
 
   private onAvccChunk(type: "description" | "keyframe" | "delta" | "seed", payload: Uint8Array): void {
+    if (this.closed || this.suspended || this.mode !== "h264") return;
     if (type === "seed") {
       // Seeds arrive before the first decoded frame *and* after a rotation, to
       // repaint a stream that has nothing new to encode. paintSeed yields to
@@ -606,6 +648,7 @@ class DeviceView {
 
   private closedStreamFallback(): void {
     if (this.img) return;
+    this.streamAbort?.abort();
     this.runMjpegStream();
   }
 
@@ -695,9 +738,13 @@ class DeviceView {
 
   private async paintSeed(payload: Uint8Array): Promise<void> {
     const framesAtStart = this.framesDecoded;
+    const generation = this.decoderGeneration;
     try {
       const bitmap = await createImageBitmap(new Blob([payload as BlobPart]));
-      if (this.framesDecoded !== framesAtStart) return; // a real frame beat us
+      if (this.closed || this.suspended || generation !== this.decoderGeneration || this.framesDecoded !== framesAtStart) {
+        bitmap.close();
+        return;
+      }
       const raster = this.rasterSize(bitmap.width, bitmap.height);
       this.noteFrameSize(bitmap.width, bitmap.height);
       if (this.canvas.width !== raster.width || this.canvas.height !== raster.height) {
@@ -719,7 +766,7 @@ class DeviceView {
     const tick = () => {
       if (this.closed) return;
       if (this.img) this.noteFrameSize(this.img.naturalWidth, this.img.naturalHeight);
-      if (this.mode === "h264") {
+      if (this.mode === "h264" && !this.suspended) {
         const fps = this.framesPresented - lastCount;
         lastCount = this.framesPresented;
         this.fpsChip.textContent = `${fps} fps`;
@@ -763,15 +810,45 @@ class DeviceView {
 
   private bindInput(): void {
     const surface = this.surfaceWrap;
+    let pointer: number | null = null;
+    let lastPoint = { x: 0, y: 0 };
+    const finish = () => {
+      if (pointer === null) return;
+      const id = pointer;
+      pointer = null;
+      this.setTouchCursor(false);
+      const p = lastPoint;
+      if (this.pinch) {
+        this.send(0x05, { type: "end", x1: p.x, y1: p.y,
+          x2: Math.min(1, Math.max(0, 2 * this.pinch.anchorX - p.x)),
+          y2: Math.min(1, Math.max(0, 2 * this.pinch.anchorY - p.y)) });
+        this.pinch = null;
+      } else this.send(0x03, { type: "end", x: p.x, y: p.y });
+      if (surface.hasPointerCapture(id)) surface.releasePointerCapture(id);
+    };
+    const heldKeys = new Set<string>();
+    this.cancelInput = () => {
+      finish();
+      for (const code of heldKeys) this.send(0x06, { type: "up", code });
+      heldKeys.clear();
+      if (this.textFlushTimer !== null) clearTimeout(this.textFlushTimer);
+      if (this.wheelTimer !== null) clearTimeout(this.wheelTimer);
+      this.textFlushTimer = this.wheelTimer = null;
+      this.textBuffer = "";
+      this.wheelAccumX = this.wheelAccumY = 0;
+    };
+    surface.addEventListener("blur", () => this.cancelInput());
     surface.addEventListener("contextmenu", (e) => e.preventDefault());
 
     surface.addEventListener("pointerdown", (e) => {
-      if (e.button !== 0) return;
+      if (e.button !== 0 || pointer !== null || this.suspended || this.ws?.readyState !== WebSocket.OPEN) return;
+      pointer = e.pointerId;
       e.preventDefault();
       surface.focus();
       surface.setPointerCapture(e.pointerId);
       this.setTouchCursor(true);
       const p = this.surfacePoint(e);
+      lastPoint = p;
       if (e.altKey) {
         this.pinch = { anchorX: p.x, anchorY: p.y };
         this.send(0x05, { type: "begin", x1: p.x, y1: p.y, x2: p.x, y2: p.y });
@@ -781,11 +858,12 @@ class DeviceView {
     });
 
     surface.addEventListener("pointermove", (e) => {
-      if (!surface.hasPointerCapture(e.pointerId)) return;
+      if (pointer !== e.pointerId) return;
       const now = performance.now();
       if (now - this.lastMoveSent < MOVE_INTERVAL_MS) return;
       this.lastMoveSent = now;
       const p = this.surfacePoint(e);
+      lastPoint = p;
       if (this.pinch) {
         const mirrored = {
           x: Math.min(1, Math.max(0, 2 * this.pinch.anchorX - p.x)),
@@ -798,28 +876,19 @@ class DeviceView {
     });
 
     const endPointer = (e: PointerEvent) => {
-      if (!surface.hasPointerCapture(e.pointerId)) return;
-      surface.releasePointerCapture(e.pointerId);
-      this.setTouchCursor(false);
-      const p = this.surfacePoint(e);
-      if (this.pinch) {
-        const mirrored = {
-          x: Math.min(1, Math.max(0, 2 * this.pinch.anchorX - p.x)),
-          y: Math.min(1, Math.max(0, 2 * this.pinch.anchorY - p.y)),
-        };
-        this.send(0x05, { type: "end", x1: p.x, y1: p.y, x2: mirrored.x, y2: mirrored.y });
-        this.pinch = null;
-      } else {
-        this.send(0x03, { type: "end", x: p.x, y: p.y });
-      }
+      if (pointer !== e.pointerId) return;
+      if (e.type === "pointerup") lastPoint = this.surfacePoint(e);
+      finish();
     };
     surface.addEventListener("pointerup", endPointer);
     surface.addEventListener("pointercancel", endPointer);
+    surface.addEventListener("lostpointercapture", endPointer);
 
     surface.addEventListener(
       "wheel",
       (e) => {
         e.preventDefault();
+        if (this.suspended || this.ws?.readyState !== WebSocket.OPEN) return;
         const surfaceEl = this.img ?? this.canvas;
         const rect = surfaceEl.getBoundingClientRect();
         this.wheelAccumX += e.deltaX / rect.width;
@@ -841,6 +910,7 @@ class DeviceView {
     );
 
     surface.addEventListener("keydown", (e) => {
+      if (this.suspended || this.ws?.readyState !== WebSocket.OPEN) return;
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.code === "KeyH") {
         e.preventDefault();
         this.sendButton("home");
@@ -871,11 +941,12 @@ class DeviceView {
       if (SPECIAL.includes(e.code) || /^F\d{1,2}$/.test(e.code)) {
         e.preventDefault();
         this.flushText();
+        heldKeys.add(e.code);
         this.send(0x06, { type: "down", code: e.code });
       }
     });
     surface.addEventListener("keyup", (e) => {
-      if (androidSpecial(e.code)) this.send(0x06, { type: "up", code: e.code });
+      if (heldKeys.delete(e.code)) this.send(0x06, { type: "up", code: e.code });
     });
   }
 
@@ -898,18 +969,37 @@ class DeviceView {
     this.send(0x0d, { text });
   }
 
+  cancelInteraction(): void {
+    this.cancelInput();
+  }
+
+  setSuspended(suspended: boolean): void {
+    if (this.suspended === suspended) return;
+    this.cancelInput();
+    this.suspended = suspended;
+    this.remote.setConnected(!suspended && this.ws?.readyState === WebSocket.OPEN);
+    if (suspended) {
+      this.streamAbort?.abort();
+      if (this.mjpegRetry !== null) clearTimeout(this.mjpegRetry);
+      this.mjpegRetry = null;
+      this.teardownDecoder();
+      if (this.img) this.img.removeAttribute("src");
+      this.setStatus("paused", false);
+    } else if (this.mode === "mjpeg") this.runMjpegStream();
+  }
+
   destroy(): void {
+    this.cancelInput();
     this.closed = true;
     this.remote.destroy();
+
+    this.streamAbort?.abort();
+    if (this.mjpegRetry !== null) clearTimeout(this.mjpegRetry);
     this.resizeObserver.disconnect();
     this.teardownDecoder();
     this.ws?.close();
     if (this.img) this.img.src = "";
   }
-}
-
-function androidSpecial(code: string): boolean {
-  return ["Enter", "Backspace", "Tab", "Escape"].includes(code);
 }
 
 function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
@@ -934,6 +1024,7 @@ class Panes {
     private readonly api: ApiState,
     private readonly deviceViews: () => DeviceView[],
     private readonly attachDevice: (name: string) => Promise<void>,
+    private readonly selectedDevice: () => string | null,
   ) {
     this.body = el("div", { class: "pane-body" });
     const tabBar = el("div", { class: "pane-tabs" });
@@ -943,7 +1034,8 @@ class Panes {
       this.tabs.set(name, tab);
       tabBar.append(tab);
     }
-    this.root = el("aside", { class: "panes hidden" }, tabBar, this.body);
+    tabBar.append(button("Close", "Close pane", () => this.toggle(this.active ?? "devices")));
+    this.root = el("aside", { class: "panes hidden", "aria-label": "Device tools" }, tabBar, this.body);
   }
 
   toggle(name: string): void {
@@ -966,6 +1058,10 @@ class Panes {
     if (name === "devices") void this.renderDevices();
     if (name === "tools") this.renderTools();
     if (name === "logs") this.renderLogs();
+  }
+
+  refreshTarget(): void {
+    if (this.active) this.open(this.active);
   }
 
   private stopStreams(): void {
@@ -1025,22 +1121,13 @@ class Panes {
   }
 
   private targetView(): DeviceView | null {
-    return this.deviceViews()[0] ?? null;
+    return this.deviceViews().find((view) => view.entry.device === this.selectedDevice()) ?? null;
   }
 
   private renderTools(): void {
-    const views = this.deviceViews();
-    let target = views[0] ?? null;
-
+    const target = this.targetView();
     const wrap = el("div", { class: "tools" });
-    if (views.length > 1) {
-      const select = el("select", { class: "select" });
-      for (const view of views) select.append(el("option", { value: view.entry.device, text: view.entry.name }));
-      select.addEventListener("change", () => {
-        target = views.find((v) => v.entry.device === select.value) ?? target;
-      });
-      wrap.append(select);
-    }
+    wrap.append(el("p", { class: "muted", text: target ? `Controls for ${target.entry.name}` : "No device attached." }));
 
     const actions = el("div", { class: "tool-grid" });
     const act = (label: string, fn: (view: DeviceView) => void) =>
@@ -1382,11 +1469,39 @@ async function main(): Promise<void> {
   const stage = el("main", { class: "stage" });
   const views: DeviceView[] = [];
   const preferMjpeg = api.codec === "mjpeg";
+  let activeDeviceId: string | null = api.devices[0]?.device ?? null;
+  let panes: Panes | null = null;
+  const mobile = window.matchMedia("(max-width: 700px), (pointer: coarse) and (max-height: 500px)");
+  const selector = el("select", { class: "select device-selector", "aria-label": "Selected device" });
+  const updateSelection = () => {
+    selector.value = activeDeviceId ?? "";
+    selector.hidden = views.length < 2;
+    for (const view of views) {
+      const active = view.entry.device === activeDeviceId;
+      view.root.classList.toggle("selected-device", active);
+      view.setSuspended(document.hidden || (mobile.matches && !active));
+    }
+  };
+  const selectDevice = (id: string) => {
+    if (activeDeviceId === id) return;
+    views.find((view) => view.entry.device === activeDeviceId)?.cancelInteraction();
+    activeDeviceId = id;
+    updateSelection();
+    panes?.refreshTarget();
+  };
+  selector.addEventListener("change", () => selectDevice(selector.value));
+  mobile.addEventListener("change", updateSelection);
+  document.addEventListener("visibilitychange", updateSelection);
 
   const addView = (entry: DeviceEntry) => {
     const view = new DeviceView(entry, preferMjpeg);
     views.push(view);
     stage.append(view.root);
+    selector.append(el("option", { value: entry.device, text: entry.name }));
+    if (!activeDeviceId) activeDeviceId = entry.device;
+    view.root.addEventListener("pointerdown", () => selectDevice(entry.device), true);
+    view.root.addEventListener("focusin", () => selectDevice(entry.device));
+    updateSelection();
   };
   api.devices.forEach(addView);
   if (api.devices.length === 0) {
@@ -1415,25 +1530,27 @@ async function main(): Promise<void> {
     }
   };
 
-  const panes = new Panes(api, () => views, attachDevice);
+  panes = new Panes(api, () => views, attachDevice, () => activeDeviceId);
+  const devicePanes = panes;
 
   const header = el(
     "header",
     { class: "topbar" },
     el("div", { class: "brand" }, el("span", { class: "logo", text: "▶" }), el("strong", { text: "serve-avd" }), el("span", { class: "muted", text: ` v${api.version}` })),
+    selector,
     el(
       "div",
       { class: "topbar-actions" },
-      button("Devices", "Devices pane", () => panes.toggle("devices"), "ghost"),
-      button("Tools", "Tools pane", () => panes.toggle("tools"), "ghost"),
-      button("Logs", "Logcat pane", () => panes.toggle("logs"), "ghost"),
+      button("Devices", "Devices pane", () => devicePanes.toggle("devices"), "ghost"),
+      button("Tools", "Tools pane", () => devicePanes.toggle("tools"), "ghost"),
+      button("Logs", "Logcat pane", () => devicePanes.toggle("logs"), "ghost"),
     ),
   );
 
-  app.replaceChildren(header, el("div", { class: "layout" }, stage, panes.root));
+  app.replaceChildren(header, el("div", { class: "layout" }, stage, devicePanes.root));
 
   const initialPanes = BOOT.initialState.panes ?? [];
-  if (initialPanes.length > 0 && initialPanes[0] !== "none") panes.open(initialPanes[0]!);
+  if (initialPanes.length > 0 && initialPanes[0] !== "none") devicePanes.open(initialPanes[0]!);
 }
 
 void main();
