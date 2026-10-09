@@ -473,6 +473,8 @@ npm install
 npm run build       # bundle CLI + middleware + browser client into dist/
 npm test            # unit tests (H.264 parser, XML/rotation/keymap parsers, find/wait, replay, MCP handler)
 npm run typecheck
+npx playwright install chromium  # one-time browser setup
+npm run test:browser             # builds client, tests UI + WebSocket commands with mock devices
 ```
 
 ## Credit & License
