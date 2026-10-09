@@ -12,6 +12,7 @@ import { WorkspaceLogcat, createLogcatState } from "./logcat";
 import { WorkspaceApps } from "./apps";
 import { WorkspaceAutomate } from "./automate";
 import { DeviceTools } from "./device-tools";
+import { PerformanceWorkspace } from "./performance-workspace";
 import { WorkspaceObservability } from "./workspace-observability";
 import type { StreamQuality } from "../workspace-types";
 
@@ -1181,7 +1182,9 @@ class Panes {
       this.tabs.set(name, tab);
       tabBar.append(tab);
     }
-    this.root = el("aside", { class: "panes inspector hidden", "aria-label": "Inspector" }, this.identity, tabBar, this.body);
+    const pin = button("Pin to grid", "Move inspector onto the workspace grid", () => this.root.dispatchEvent(new CustomEvent("inspectorpin", { bubbles: true })), "small inspector-pin");
+    pin.setAttribute("aria-label", "Move inspector onto the workspace grid");
+    this.root = el("aside", { class: "panes inspector hidden", "aria-label": "Inspector" }, this.identity, pin, tabBar, this.body);
   }
 
   get visible(): boolean { return this.active !== null; }
@@ -1754,10 +1757,19 @@ async function main(): Promise<void> {
   drawerToggle.setAttribute("aria-label", "Expand activity and captures");
   const activityButton = button("Activity", "Open activity timeline", () => openDrawer("activity"), "small");
   const capturesButton = button("Captures", "Open captures", () => openDrawer("captures"), "small");
+  const drawerExpand = button("Expand", "Expand drawer to workspace", () => {
+    drawerOpen = true;
+    drawer.classList.toggle("drawer-expanded");
+    updateDrawer();
+  }, "small drawer-expand");
   const drawer = el("section", { class: "workspace-drawer", "aria-label": "Activity and captures" },
-    el("div", { class: "workspace-drawer-bar" }, drawerToggle, activityButton, capturesButton, drawerNotice), drawerBody);
+    el("div", { class: "workspace-drawer-bar" }, drawerToggle, activityButton, capturesButton, drawerExpand, drawerNotice), drawerBody);
   function updateDrawer(): void {
     drawerBody.hidden = !drawerOpen;
+    if (!drawerOpen) drawer.classList.remove("drawer-expanded");
+    drawerExpand.textContent = drawer.classList.contains("drawer-expanded") ? "Restore" : "Expand";
+    drawerExpand.setAttribute("aria-label", drawer.classList.contains("drawer-expanded") ? "Restore drawer size" : "Expand drawer to workspace");
+    drawerExpand.setAttribute("aria-pressed", String(drawer.classList.contains("drawer-expanded")));
     activityRoot.hidden = drawerTab !== "activity";
     capturesRoot.hidden = drawerTab !== "captures";
     drawerToggle.textContent = drawerOpen ? "⌄" : "⌃";
@@ -1768,6 +1780,60 @@ async function main(): Promise<void> {
   }
   function openDrawer(tab: "activity" | "captures"): void { drawerTab = tab; drawerOpen = true; updateDrawer(); }
   const tools = new Map<string, DeviceTools>();
+  let inspectorPinned = false;
+  const inspectorCard = el("section", { class: "workspace-tool-card inspector-workspace", hidden: "", "aria-label": "Inspector workspace" });
+  let inspectorDock: HTMLElement;
+  const dockInspector = () => {
+    inspectorPinned = false;
+    inspectorCard.hidden = true;
+    inspectorCard.classList.remove("tool-expanded");
+    const expand = inspectorCard.querySelector<HTMLButtonElement>("[data-tool-expand]");
+    if (expand) { expand.textContent = "Expand"; expand.setAttribute("aria-label", "Expand inspector workspace"); expand.setAttribute("aria-pressed", "false"); }
+    if (panes) inspectorDock.append(panes.root);
+    update();
+  };
+  inspectorCard.append(el("header", { class: "device-head" }, el("strong", { text: "Inspector" }),
+    button("Dock", "Return inspector to sidebar", dockInspector, "small"),
+    button("Expand", "Expand inspector workspace", () => expandTool(inspectorCard, "__inspector"), "small"),
+    button("Close", "Close inspector workspace", () => { dockInspector(); panes?.close(); }, "small")));
+  inspectorCard.querySelector<HTMLButtonElement>('button[title="Expand inspector workspace"]')!.dataset.toolExpand = "inspector";
+  inspectorCard.querySelectorAll<HTMLButtonElement>("button").forEach(b => b.setAttribute("aria-label", b.title));
+  const performance = new PerformanceWorkspace(() => views.filter(v => !hidden.has(v.entry.device)).flatMap(v => {
+    const tool = tools.get(v.entry.device);
+    return tool ? [{ id: v.entry.device, name: v.entry.name, tool }] : [];
+  }), () => { performance.close(); update(); }, () => expandTool(performance.root, "__performance"));
+  stage.append(performance.root, inspectorCard);
+  function expandTool(root: HTMLElement, id: string): void {
+    const expanded = root.classList.toggle("tool-expanded");
+    const button = root.querySelector<HTMLButtonElement>("[data-tool-expand]");
+    if (button) {
+      button.textContent = expanded ? "Restore" : "Expand";
+      button.setAttribute("aria-pressed", String(expanded));
+      button.setAttribute("aria-label", `${expanded ? "Restore" : "Expand"} ${button.dataset.toolExpand} workspace`);
+    }
+    update();
+    canvas.fill(id);
+  }
+  function openPerformance(id?: string): void {
+    layout = null;
+    if (mobile.matches) { showRail = false; panes?.close(); }
+    performance.open(id);
+    update();
+    canvas.fill("__performance");
+    if (mobile.matches) performance.root.scrollIntoView({ block: "start" });
+  }
+  function pinInspector(name?: string): void {
+    if (name) panes?.open(name);
+    if (!panes?.visible) panes?.open("tools");
+    inspectorPinned = true;
+    layout = null;
+    inspectorCard.append(panes!.root);
+    inspectorCard.hidden = false;
+    update();
+    canvas.fill("__inspector");
+    if (mobile.matches) inspectorCard.scrollIntoView({ block: "start" });
+  }
+
   const apps = new WorkspaceApps(() => visibleViews().filter(view => view.connected), () => ({ csrfToken, expired: authExpired }), expireAuthentication);
   const automate = new WorkspaceAutomate(`serve-avd:features:${BOOT.basePath}:${account?.id ?? "local"}`, () => visibleViews().filter(view => view.connected),
     (active, steps) => remote.setMacroRecording(active, steps));
@@ -1815,7 +1881,12 @@ async function main(): Promise<void> {
   const header = el("header", { class: "topbar" },
     el("div", { class: "brand" }, el("span", { class: "logo", text: "▶" }), el("strong", { text: "serve-avd" }), el("span", { class: "version", text: `v${api.version}` })),
     layoutBar, selector,
+    el("div", { class: "workspace-tool-launcher", "aria-label": "Workspace tools" },
+      button("Performance", "Open performance workspace", () => openPerformance(), "small"),
+      button("Apps", "Open Apps on grid", () => pinInspector("apps"), "small"),
+      button("Automate", "Open Automate on grid", () => pinInspector("automate"), "small")),
     el("div", { class: "topbar-actions" }, mirrorButton, el("span", { class: "toolbar-divider" }), railToggle, remoteToggle, inspectorToggle));
+  header.querySelectorAll<HTMLButtonElement>(".workspace-tool-launcher button").forEach(b => b.setAttribute("aria-label", b.title));
   if (account) {
     const menu = el("details", { class: "account-menu" });
     const summary = el("summary", { text: `${account.username} · ${account.role}`, "aria-label": "Account menu" });
@@ -1865,7 +1936,7 @@ async function main(): Promise<void> {
     const shown = visibleViews();
     stage.dataset.count = String(shown.length);
     count.textContent = `${shown.length} of ${views.length} shown`;
-    empty.hidden = shown.length !== 0;
+    empty.hidden = shown.length !== 0 || !performance.root.hidden || inspectorPinned;
     if (!shown.length) {
       empty.replaceChildren(el("h2", { text: views.length ? "All devices are hidden" : "No emulators attached" }),
         el("p", { class: "muted", text: views.length ? "Use the eye toggle in the device list to bring one back." : "Attach a connected device or start an AVD from the device list." }),
@@ -1892,7 +1963,9 @@ async function main(): Promise<void> {
       nodes.eye.setAttribute("aria-pressed", String(!hidden.has(id)));
       nodes.eye.innerHTML = hidden.has(id) ? workspaceIcons.eyeOff : workspaceIcons.eye;
     }
-    canvas.sync(views.map(v => ({ id: v.entry.device, root: v.root })), !mobile.matches, layout, activeDeviceId);
+    inspectorCard.hidden = !inspectorPinned || !panes?.visible;
+    canvas.sync([...views.map(v => ({ id: v.entry.device, root: v.root })),
+      { id: "__performance", root: performance.root }, { id: "__inspector", root: inspectorCard }], !mobile.matches, layout, activeDeviceId);
     remote.setVisible(showRemote);
     updateRemote();
     automate.checkTargets();
@@ -1938,7 +2011,7 @@ async function main(): Promise<void> {
       screen: view.root.querySelector<HTMLElement>(".screen-wrap")!,
       storageKey: `serve-avd:quality:${BOOT.basePath}:${account?.id ?? "local"}:${entry.device}`,
       screenSize: () => view.featureScreenSize, browserMetrics: () => view.featureBrowserMetrics,
-      onQuality: quality => view.setStreamQuality(quality) });
+      onQuality: quality => view.setStreamQuality(quality), onPerformance: () => openPerformance(entry.device) });
     tools.set(entry.device, tool);
     observer.attachDevice(entry, { header: view.root.querySelector<HTMLElement>(".device-head-actions")!, footer,
       screen: view.root.querySelector<HTMLElement>(".screen-wrap")! });
@@ -2068,6 +2141,7 @@ async function main(): Promise<void> {
   }
   panes = new Panes(api, () => views, attachDevice, () => activeDeviceId, apps, automate);
   automate.select(views.find(view => view.entry.device === activeDeviceId) ?? null);
+  panes.root.addEventListener("inspectorpin", () => pinInspector());
   panes.root.addEventListener("inspectorchange", () => {
     if (mobile.matches && panes?.visible) showRail = false;
     update();
@@ -2078,10 +2152,14 @@ async function main(): Promise<void> {
   document.addEventListener("keydown", e => {
     if (e.key === "Escape" && !remote.root.contains(e.target as Node)) {
       if (mobile.matches) showRail = false;
+      if ((e.target as Element)?.closest(".performance-workspace")) performance.close();
+      drawer.classList.remove("drawer-expanded");
+      updateDrawer();
       panes?.close(); update();
     }
   });
-  app.replaceChildren(header, el("div", { class: "layout" }, rail, stageHost, panes.root), drawer);
+  inspectorDock = el("div", { class: "layout" }, rail, stageHost, panes.root);
+  app.replaceChildren(header, inspectorDock, drawer);
   updateDrawer();
   if (activeDeviceId) observer.selectDevice(activeDeviceId);
   const initial = BOOT.initialState.panes;

@@ -146,13 +146,13 @@ export class WorkspaceCanvas {
   }
 
   private isOverlay(target: EventTarget | null): boolean {
-    return target instanceof Element && !!target.closest(".canvas-controls, .workspace-remote");
+    return target instanceof Element && !!target.closest(".canvas-controls, .workspace-remote, .performance-body, .inspector-workspace .panes");
   }
 
   private start(e: PointerEvent): void {
     if (!this.enabled || this.gesture || !e.isPrimary || this.isOverlay(e.target) || (e.button !== 0 && e.button !== 1)) return;
     const target = e.target as Element;
-    const root = target.closest<HTMLElement>(".device");
+    const root = target.closest<HTMLElement>(".device, .workspace-tool-card");
     const pan = this.hand || this.space || e.button === 1 || !root;
     if (target.closest(".workspace-empty")) return;
     if (!pan && (this.layout === "focus" || !target.closest(".device-head") || target.closest("button, input, select, textarea"))) return;
@@ -198,13 +198,13 @@ export class WorkspaceCanvas {
     this.items = items.filter(i => !i.root.hidden);
     const primary = this.items.find(i => i.id === target) ?? this.items[0];
     for (const item of items) {
-      const focus = layout === "focus" && !item.root.hidden;
+      const focus = layout === "focus" && !item.root.hidden && !item.root.classList.contains("workspace-tool-card");
       item.root.classList.toggle("focus-primary", focus && item === primary);
       item.root.classList.toggle("focus-thumbnail", focus && item !== primary);
       item.root.style.order = focus ? (item === primary ? "0" : "1") : "";
       if (layout !== "focus" || !enabled) item.root.style.removeProperty("--focus-width");
-      if (enabled && !this.positions.has(item.id)) {
-        const right = Math.max(0, ...items.filter(i => i !== item && this.positions.has(i.id)).map(i => this.positions.get(i.id)!.x + (i.root.offsetWidth || parseFloat(getComputedStyle(i.root).width) || 336)));
+      if (enabled && !item.root.hidden && !this.positions.has(item.id)) {
+        const right = Math.max(0, ...items.filter(i => i !== item && !i.root.hidden && this.positions.has(i.id)).map(i => this.positions.get(i.id)!.x + (i.root.offsetWidth || parseFloat(getComputedStyle(i.root).width) || 336)));
         this.positions.set(item.id, { x: right ? Math.ceil((right + GRID) / GRID) * GRID : 0, y: 0 });
       }
       if (enabled) { if (layout !== "focus") this.place(item); }
@@ -258,8 +258,11 @@ export class WorkspaceCanvas {
   /** Focus is a presentation of the visible devices, leaving saved grid coordinates intact. */
   private arrangeFocus(force = false): void {
     if (!this.items.length || !this.host.clientWidth) { this.focusSignature = ""; return; }
-    const primary = this.items.find(i => i.id === this.focusTarget) ?? this.items[0]!;
-    const ordered = [primary, ...this.items.filter(i => i !== primary)];
+    const tools = this.items.filter(i => i.root.classList.contains("workspace-tool-card"));
+    const devices = this.items.filter(i => !i.root.classList.contains("workspace-tool-card"));
+    const primary = devices.find(i => i.id === this.focusTarget) ?? devices[0];
+    if (!primary) { this.fit(); return; }
+    const ordered = [primary, ...devices.filter(i => i !== primary)];
     const width = Math.max(160, this.host.clientWidth - 48);
     const sideBySide = width >= 600 && ordered.length > 1;
     const thumbWidth = Math.min(220, width);
@@ -276,7 +279,12 @@ export class WorkspaceCanvas {
       this.focusPositions.set(item.id, { x: sideBySide ? primaryWidth + GRID : Math.round((width - thumbWidth) / 2), y });
       y += Math.ceil((item.root.offsetHeight + GRID) / GRID) * GRID;
     }
-    for (const item of ordered) this.place(item);
+    let toolY = Math.max(primary.root.offsetHeight, y) + GRID;
+    for (const tool of tools) {
+      this.focusPositions.set(tool.id, { x: 0, y: toolY });
+      toolY += tool.root.offsetHeight + GRID;
+    }
+    for (const item of [...ordered, ...tools]) this.place(item);
     this.fit();
   }
 

@@ -34,6 +34,14 @@ The workspace has a connected-device rail, live preview cards, a floating TV rem
 
 The toolbar toggles the device list, remote, and inspector. Inspector controls are searchable and grouped into collapsible sections. Logcat supports text filtering, minimum severity, pause, and clearing the displayed log.
 
+### Workspace tools
+
+Use **Performance**, **Apps**, or **Automate** in the toolbar to open a full panel on the workspace grid. Drag its header or use the header’s arrow keys to position it next to a preview. Grid, Split, Stack and Fit all include open tool panels. **Expand** gives a panel more room; **Restore** returns its normal size. The inspector’s **Pin to grid** and **Dock** controls move the same active view between the canvas and sidebar.
+
+Performance offers a single-device view or comparison of shown devices, four large CPU/app-memory/app-FPS/stream-bitrate charts, 1/5/10-minute history windows, sample minimum/average/peak values, pause/resume and JSON export. Collection uses the existing per-device sampler and retains at most 600 distinct samples; it is session history, not persistent monitoring. Choose one device to adjust its browser-scoped stream quality inside the panel. Missing or stale readings are labeled, and app FPS stays separate from browser decode/render FPS. On mobile, tool panels become full-width cards with stacked charts.
+
+Apps uses separate installed-app and recent-build columns, while Automate gives the macro editor a full-width section above snapshots, presets and deep links. **Expand** in the Activity/Captures bar enlarges the drawer for timelines, recording playback, export and attached logs.
+
 ### TV remote
 
 The shared remote targets the selected, visible device. Focus its body to use arrow keys, Enter for OK, and Escape for Back; Tab moves between buttons, where Enter/Space activates the focused button. Use its target button to cycle devices. Drag the handle to move it, use arrow keys while the handle has focus, or double-click the handle to re-dock. The chevron collapses the remote.

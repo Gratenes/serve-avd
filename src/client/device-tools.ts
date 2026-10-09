@@ -82,7 +82,7 @@ export function adaptiveQuality(
     bitRateMbps: Math.max(1, current.bitRateMbps * 0.7),
   };
 }
-interface BrowserMetrics {
+export interface BrowserMetrics {
   decodeLatencyMs: number;
   decodedFps: number;
   renderedFps: number;
@@ -99,6 +99,7 @@ interface ToolsConfig {
   screenSize: () => { width: number; height: number };
   browserMetrics: () => BrowserMetrics;
   onQuality: (quality: StreamQuality) => void;
+  onPerformance: () => void;
 }
 export class DeviceTools {
   private readonly focusToggle: HTMLButtonElement;
@@ -115,6 +116,8 @@ export class DeviceTools {
   );
   private readonly detailBody = node("div");
   private readonly samples: PerformanceSample[] = [];
+  private metricError = "";
+  private qualityHost: HTMLElement | null = null;
   private readonly trail: FocusObservation[] = [];
   private current: FocusObservation | null = null;
   private pendingDirection: { key: string; before: string | null } | null =
@@ -205,6 +208,7 @@ export class DeviceTools {
     );
     this.performanceDetail.append(
       node("summary", "Performance"),
+      control("Open performance workspace", config.onPerformance),
       this.detailBody,
     );
     config.footer.append(
@@ -336,12 +340,20 @@ export class DeviceTools {
     const item = this.current.node;
     this.focusInfo.textContent = `${item.text ?? item.contentDesc ?? item.class ?? "Focused view"}\n${item.resourceId ?? "No resource ID"} · ${item.class ?? ""}\n[${item.bounds!.left},${item.bounds!.top}]–[${item.bounds!.right},${item.bounds!.bottom}] · ${this.moves} moves · ${this.deadEnds} dead ends · ${this.lost} lost${this.unchanged >= 3 ? `\n${this.lastDirection} did not move focus after ${this.unchanged} attempts.` : ""}`;
   }
-  private renderQuality(): void {
+  get performance() {
+    return { samples: [...this.samples], browser: { ...this.config.browserMetrics() },
+      error: this.metricError, connected: this.config.device.connected };
+  }
+  mountQuality(host: HTMLElement | null): void {
+    this.qualityHost = host;
+    this.renderQuality();
+  }
+  private renderQuality(panel: HTMLElement = this.qualityPanel, expanded = false): void {
     const supported = this.config.browserMetrics().codec === "h264";
     this.qualityToggle.textContent = supported
       ? `${this.quality.resolution === "native" ? "Native" : this.quality.resolution} · ${this.quality.fps}${this.quality.adaptive ? " · Auto" : ""}`
       : "MJPEG";
-    this.qualityPanel.replaceChildren(
+    panel.replaceChildren(
       node("strong", "Stream quality"),
       node(
         "small",
@@ -355,11 +367,11 @@ export class DeviceTools {
           ? "This browser · H.264 encoder"
           : "MJPEG fallback · encoder quality controls unavailable",
       ),
-      control("Close", () => {
-        this.qualityPanel.hidden = true;
-        this.qualityToggle.setAttribute("aria-expanded", "false");
-      }),
     );
+    if (!expanded) panel.append(control("Close", () => {
+      this.qualityPanel.hidden = true;
+      this.qualityToggle.setAttribute("aria-expanded", "false");
+    }));
     const auto = node("input");
     auto.type = "checkbox";
     auto.checked = this.quality.adaptive;
@@ -369,7 +381,7 @@ export class DeviceTools {
     );
     const label = node("label", "Adapt to my connection");
     label.prepend(auto);
-    this.qualityPanel.append(label);
+    panel.append(label);
     for (const [title, key, values] of [
       ["Resolution", "resolution", ["native", "1080p", "720p", "540p"]],
       ["Max frame rate", "fps", ["15", "30", "60"]],
@@ -392,7 +404,7 @@ export class DeviceTools {
           [key]: key === "fps" ? Number(select.value) : select.value,
         } as StreamQuality),
       );
-      this.qualityPanel.append(row(node("span", title), select));
+      panel.append(row(node("span", title), select));
     }
     const bitrate = node("input");
     bitrate.type = "range";
@@ -410,7 +422,7 @@ export class DeviceTools {
         bitRateMbps: Number(bitrate.value),
       }),
     );
-    this.qualityPanel.append(
+    panel.append(
       node("span", `Max bitrate ${this.quality.bitRateMbps.toFixed(1)} Mbps`),
       bitrate,
       node(
@@ -418,6 +430,7 @@ export class DeviceTools {
         "H.265 and AV1 are unavailable. MJPEG fallback keeps its existing encoding.",
       ),
     );
+    if (!expanded && this.qualityHost) this.renderQuality(this.qualityHost, true);
   }
   private changeQuality(quality: StreamQuality): void {
     this.quality = quality;
@@ -450,16 +463,20 @@ export class DeviceTools {
         { signal: this.abort.signal },
       );
       if (this.destroyed) return;
-      if (!sample.timestamp) return;
+      if (!Number.isFinite(Date.parse(sample.timestamp))) throw new Error("No measurements received");
+      this.metricError = "";
       const browser = this.config.browserMetrics();
       sample = {
         ...sample,
         streamMbps: browser.codec === "h264" ? browser.streamMbps : NaN,
       };
-      this.samples.push(sample);
-      if (this.samples.length > 60) this.samples.shift();
+      // The server may return its cached app sample between collection passes.
+      if (this.samples.at(-1)?.timestamp === sample.timestamp) this.samples[this.samples.length - 1] = sample;
+      else this.samples.push(sample);
+      if (this.samples.length > 600) this.samples.shift();
       this.paintMetrics(sample);
-    } catch {
+    } catch (error) {
+      this.metricError = errorText(error);
       if (!this.destroyed) {
         this.metrics.textContent = "Performance unavailable";
         this.metrics.classList.add("unavailable");
@@ -531,7 +548,7 @@ export class DeviceTools {
           node("span", label),
           node(
             "span",
-            typeof value === "number"
+            typeof value === "number" && Number.isFinite(value)
               ? `${Number(value.toFixed(1))}${unit}`
               : "Unavailable",
           ),
@@ -553,6 +570,7 @@ export class DeviceTools {
   }
   destroy(): void {
     this.destroyed = true;
+    this.qualityHost = null;
     clearInterval(this.timer);
     this.abort.abort();
     this.focusLayer.remove();

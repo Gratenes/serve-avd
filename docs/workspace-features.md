@@ -151,3 +151,26 @@ All ten feature groups are implemented with source review and focused automated 
 - Revoke share link disables the existing capability. Creating a new link after revocation does not reactivate old links. Links are session-scoped and expire after seven days at most; they do not survive a server restart.
 - Deployment wrappers must call `middleware.handleShare(req, res)` before their own authentication gate; the shipped dev handler does this. This handler recognizes only `/share/…` and permits only GET/HEAD for an existing capability.
 - Boundary tests cover public viewing/ranges, protected workspace and log access, mutation authentication/CSRF, revocation, expiry, invalidation and base paths, including the example wrapper.
+
+
+### Design parity and workspace placement follow-up
+
+The original feature checklist established working operations, but overstated presentation parity. The performance view requires four large graph cards beside quality controls; the delivered footer had tiny sparklines and a text-only detail popup. The canvas could arrange only device previews, so detailed work remained tied to emulator size or the narrow sidebar.
+
+| Reference areas | Assessment before this pass | Change / retained behavior |
+| --- | --- | --- |
+| Main / Stream | Entry points existed; expanded performance composition was missing | Performance is now a movable grid panel with four large timestamped charts, device comparison, 1/5/10-minute windows, minimum/average/peak readings, display pause, JSON export and per-device quality controls. |
+| Apps / Crash | Operations and trace detail existed in the inspector; narrow width limited reading and comparing builds | Apps can open on the grid; installed apps and recent builds use separate columns, crash detail spans the panel. Pin/Dock moves the existing view rather than creating duplicate jobs. |
+| Macros / Snapshots / Presets | Functional editors and actions existed but competed for sidebar space | Automate can open as a grid panel, with the macro editor spanning both columns and snapshots/presets/deep links below. The active target remains the inspector’s selected device. |
+| Capture / Timeline | The bottom drawer uses the bottom-drawer placement; its compact height constrained detailed work | Expand/Restore gives Activity and Captures workspace-sized room, reusing the existing player, trim/export, log viewer and timeline. |
+| Focus | Overlay placement belongs on the emulator | Retained. Observed focus bounds/dead ends are real; unsupported Android nextFocus claims from prototype sample text remain omitted. |
+
+Panels participate in canvas placement and layout presets, and have Expand/Restore and Close controls. Tool panels are distinct from devices: they do not acquire emulator input, count as connected devices, or become Focus thumbnails. Header dragging/arrow movement reuses the canvas coordinate store. Mobile uses full-width stacked cards; graphs and controls do not overflow the viewport.
+
+The performance view reuses existing authenticated samplers and encoder controls. It adds no API routes or polling of its own. Up to 600 distinct app-sample timestamps are retained per device in memory; app changes and unavailable samples break chart lines. Display pause freezes the view/export while collection continues. Exports identify device, timestamps, window and browser measurements. Collection failures retain history with an explicit unavailable label; missing app FPS, MJPEG bitrate and end-to-end latency are never replaced with made-up values.
+
+This pass improves layout and workflow depth, not unsupported capabilities: AAB/split installation, cross-image snapshot copying, H.265/AV1 and inferred nextFocus relationships remain unavailable as documented above. Native design runtime examples still use sample data and are not pixel-identical production screens.
+
+Verification: `test/browser-performance.test.mjs` exercises real browser comparison, display pause/resume, exported measurements, retained error history, expanded sizing, sidebar/grid docking, mobile overflow/input isolation, single-device encoder changes, keyboard positioning and non-overlapping grid arrangement. Existing device, recording, log, focus and authentication suites remain the regression boundary. Screenshots were inspected on desktop and at 390px mobile width; no live app mutations were needed for this UI change.
+
+Final verification for this pass: typecheck and build passed, all **81 unit tests** and **70 browser tests** passed.
