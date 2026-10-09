@@ -134,3 +134,19 @@ test('H264 fetch is aborted for inactive devices and restarts on resume', async 
     assert.deepEqual(h.errors, []);
   } finally { await h.close(); }
 });
+
+test('desktop text buffered before focus changes is sent exactly once', async () => {
+  const h = await harness({width:1280,height:900});
+  try {
+    const phone = h.page.locator('.device').nth(0);
+    await phone.locator('.screen-wrap').focus();
+    // Dispatch synchronously to make blur occur before the 120ms flush timer.
+    await phone.locator('.screen-wrap').evaluate(surface => {
+      surface.dispatchEvent(new KeyboardEvent('keydown',{key:'x',code:'KeyX',bubbles:true,cancelable:true}));
+      surface.blur();
+    });
+    await waitForMessages(h,1);
+    await h.page.waitForTimeout(150);
+    assert.deepEqual(h.messages,[{device:'phone',tag:13,body:{text:'x'}}]);
+  } finally { await h.close(); }
+});
