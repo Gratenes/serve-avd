@@ -5,6 +5,7 @@
  */
 import { AvccDemuxer, avcCodecString, isAvccSupported } from "./avcc-codec";
 import { icons, type IconName } from "./icons";
+import { RemoteControls } from "./remote-controls";
 
 declare const __SERVE_AVD_VERSION__: string | undefined;
 
@@ -196,6 +197,7 @@ function touchCursorCss(pressed: boolean): string {
 
 class DeviceView {
   readonly root: HTMLElement;
+  private readonly remote: RemoteControls;
   private readonly surfaceWrap: HTMLElement;
   private readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
@@ -269,6 +271,12 @@ class DeviceView {
     this.surfaceWrap = el("div", { class: "screen-wrap", tabindex: "0" }, this.canvas, this.notice);
     this.setTouchCursor(false);
 
+    this.remote = new RemoteControls(entry.name, (button) => {
+      // Never enter send()'s reconnect queue with a remote command.
+      if (!this.closed && this.ws?.readyState === WebSocket.OPEN) this.sendButton(button);
+      else this.remote.setConnected(false);
+    });
+
     this.root = el(
       "section",
       { class: "device" },
@@ -280,6 +288,7 @@ class DeviceView {
       ),
       el("div", { class: "device-frame" }, this.surfaceWrap),
       this.buildControls(),
+      this.remote.root,
     );
 
     // The encoded frame is much larger than the on-page phone in the common
@@ -417,6 +426,7 @@ class DeviceView {
     ws.binaryType = "arraybuffer";
     this.ws = ws;
     ws.onopen = () => {
+      this.remote.setConnected(true);
       this.setStatus(this.mode === "h264" ? "H.264" : "MJPEG", true);
       for (const frame of this.wsQueue) ws.send(frame);
       this.wsQueue = [];
@@ -439,6 +449,7 @@ class DeviceView {
       }
     };
     ws.onclose = () => {
+      this.remote.setConnected(false);
       this.ws = null;
       if (!this.closed) {
         this.setStatus("reconnecting", false);
@@ -889,6 +900,7 @@ class DeviceView {
 
   destroy(): void {
     this.closed = true;
+    this.remote.destroy();
     this.resizeObserver.disconnect();
     this.teardownDecoder();
     this.ws?.close();
