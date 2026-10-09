@@ -8,6 +8,7 @@ export async function harness(viewport = { width: 390, height: 844 }, codec = "m
   const messages = [];
   const requests = [];
   const streamClosures = [];
+  const avccStreams = new Map();
   const devices = ["phone", "tv"].map((id, index) => ({
     device: id,
     name: index ? "Living Room TV" : "Pixel Phone",
@@ -53,7 +54,11 @@ export async function harness(viewport = { width: 390, height: 844 }, codec = "m
     if (path.endsWith("/streamAvcc")) {
       res.writeHead(200, { "content-type": "application/octet-stream" });
       res.flushHeaders();
-      req.on("close", () => streamClosures.push(path));
+      avccStreams.set(path, res);
+      req.on("close", () => {
+        streamClosures.push(path);
+        if (avccStreams.get(path) === res) avccStreams.delete(path);
+      });
       return;
     }
     if (path.endsWith("/streamMjpeg") || path.endsWith("/screenshot")) {
@@ -66,7 +71,7 @@ export async function harness(viewport = { width: 390, height: 844 }, codec = "m
     }
     res.setHeader("content-type", "application/json");
     const data = path === "/api" ? state : path === "/grid" ? {
-      devices: devices.map((device) => ({ serial: device.device, model: device.name, state: "device", attached: true })),
+      devices: devices.map((device) => ({ ...device, serial: device.device, model: device.name, state: "device", attached: true })),
       avds: [],
     } : path === "/event-log" ? [] : { ok: true, result: { snapshots: [] } };
     res.end(JSON.stringify(data));
@@ -97,7 +102,7 @@ export async function harness(viewport = { width: 390, height: 844 }, codec = "m
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(`http://127.0.0.1:${server.address().port}`);
     await page.waitForFunction(() => document.querySelector(".device .chip-status.live"));
-    return { page, browser, messages, requests, streamClosures, errors, wss, close };
+    return { page, browser, devices, messages, requests, streamClosures, avccStreams, errors, wss, close };
   } catch (error) {
     await close();
     throw error;

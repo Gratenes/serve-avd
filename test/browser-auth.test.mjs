@@ -18,15 +18,15 @@ async function fixture(basePath = '', mockDevice = false) {
   const wss = new WebSocketServer({ noServer: true });
   const server = http.createServer(async (req, res) => {
     const path = new URL(req.url, 'http://localhost').pathname;
-    if (mockDevice && (path === basePath + '/api' || path.startsWith(basePath + '/helper/mock/'))) {
+    if (mockDevice && (path === basePath + '/api' || path === basePath + '/grid/api' || path.startsWith(basePath + '/helper/mock/'))) {
       if (await middleware.auth.handle(req, res)) return;
-      if (path === basePath + '/api') {
+      if (path === basePath + '/api' || path === basePath + '/grid/api') {
         const prefix = basePath + '/helper/mock';
         const device = { device: 'mock', name: 'Mock device', videoAvailable: false,
           config: { width: 1080, height: 1920, orientation: 'portrait', rotation: 0 },
           ...Object.fromEntries(['streamMjpeg', 'streamAvcc', 'ws', 'config', 'logs', 'screenshot', 'ax', 'foreground', 'action'].map(key => [key + 'Endpoint', prefix + '/' + key])) };
         res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ version: 'test', codec: 'mjpeg', basePath, initialState: {}, devices: [device], gridApiEndpoint: basePath + '/grid/api', gridStartEndpoint: basePath + '/grid/api/start', eventLogEndpoint: basePath + '/events', eventLogEventsEndpoint: basePath + '/events/stream' }));
+        res.end(JSON.stringify(path === basePath + '/grid/api' ? { devices: [{ ...device, serial: 'mock', state: 'device', attached: true }], avds: [] } : { version: 'test', codec: 'mjpeg', basePath, initialState: {}, devices: [device], gridApiEndpoint: basePath + '/grid/api', gridStartEndpoint: basePath + '/grid/api/start', eventLogEndpoint: basePath + '/events', eventLogEventsEndpoint: basePath + '/events/stream' }));
       } else { res.statusCode = 204; res.end(); }
       return;
     }
